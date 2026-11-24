@@ -19,5 +19,5 @@
 
 <!-- New Lab Console UI will be rendered in the iframe. -->
 @if (useLabConsoleIframe$ | async) {
-  <iframe #iframe [src]="iframeUrl"></iframe>
+  <iframe #iframe [src]="iframeUrl" (load)="onIframeLoad()"></iframe>
 }

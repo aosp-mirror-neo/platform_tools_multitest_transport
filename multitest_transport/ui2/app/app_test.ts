@@ -26,6 +26,7 @@ import {APP_DATA} from './services/app_data';
 import {CommonParamsService} from './services/common_params_service';
 import {NavigationEventService, NavigationTarget} from './services/navigation_event_service';
 import {UserService} from './services/user_service';
+import {AppBackdropService} from './shared/app_backdrop_service';
 import {HeaderSlotService} from './shared/header_slot_service';
 import {getEl} from './testing/jasmine_util';
 
@@ -145,6 +146,47 @@ describe('Mtt', () => {
     expect(getEl(el, 'mat-toolbar').querySelector('.version-info')).toBeNull();
     // No analytics tracking id => no privacy notice.
     expect(footer.querySelector('.privacy-notice')).toBeNull();
+  });
+
+  it('should dim the whole app while a dialog of the Lab Console is open', () => {
+    const backdrop = getEl(el, '.app-backdrop');
+    const toolbar = getEl(el, 'mat-toolbar');
+    const sidenav = getEl(el, 'mat-sidenav');
+    const main = getEl(el, 'main');
+    const footer = getEl(el, 'footer');
+    // Over the side navigation, the header and the footer.
+    expect(backdrop.closest('mat-sidenav-container')).toBeNull();
+    expect(backdrop.classList).not.toContain('showing');
+    expect(toolbar.hasAttribute('inert')).toBeFalse();
+    expect(sidenav.hasAttribute('inert')).toBeFalse();
+    expect(footer.hasAttribute('inert')).toBeFalse();
+
+    const appBackdropService = TestBed.inject(AppBackdropService);
+    const clipPath =
+        'polygon(evenodd, 0px 0px, 100% 0px, 100% 100%, 0px 100%, 0px 0px, ' +
+        '10px 20px, 30px 20px, 30px 40px, 10px 40px, 10px 20px, 0px 0px)';
+    appBackdropService.show(clipPath);
+    mttFixture.detectChanges();
+    expect(backdrop.classList).toContain('showing');
+    expect(backdrop.style.clipPath).toBe(clipPath);
+    // Blocks keyboard Tab focus on dimmed chrome while keeping main interactive.
+    expect(toolbar.hasAttribute('inert')).toBeTrue();
+    expect(sidenav.hasAttribute('inert')).toBeTrue();
+    expect(footer.hasAttribute('inert')).toBeTrue();
+    expect(main.hasAttribute('inert')).toBeFalse();
+
+    // Keeps the focus in the iframe, e.g. so that Escape closes the dialog.
+    const mousedown =
+        new MouseEvent('mousedown', {bubbles: true, cancelable: true});
+    backdrop.dispatchEvent(mousedown);
+    expect(mousedown.defaultPrevented).toBeTrue();
+
+    appBackdropService.hide();
+    mttFixture.detectChanges();
+    expect(backdrop.classList).not.toContain('showing');
+    expect(toolbar.hasAttribute('inert')).toBeFalse();
+    expect(sidenav.hasAttribute('inert')).toBeFalse();
+    expect(footer.hasAttribute('inert')).toBeFalse();
   });
 
   describe('Legacy UI switcher', () => {

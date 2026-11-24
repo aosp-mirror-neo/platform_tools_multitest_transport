@@ -204,3 +204,33 @@ mat-toolbar {
   object-fit: contain;
   vertical-align: middle;
 }
+
+// Dims the whole app while a dialog of the embedded Lab Console (V6) iframe is
+// open (see AppBackdropService). Same color and fade as the dialog's own CDK
+// backdrop inside the iframe, so that both read as a single backdrop.
+.app-backdrop {
+  background: rgba(0, 0, 0, 0.32);
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: fixed;
+  // Fade-out: only as long as the dialog's exit animation, at the end of which
+  // MatDialog removes its own backdrop at once.
+  transition: opacity 75ms cubic-bezier(0.25, 0.8, 0.25, 1);
+  // Above mat-sidenav-container (z-index: 1) and the sticky toolbar.
+  z-index: 2;
+
+  &.showing {
+    opacity: 1;
+    pointer-events: auto;
+    // Fade-in: same as the CDK backdrop.
+    transition-duration: 400ms;
+  }
+
+  @media (prefers-reduced-motion) {
+    &,
+    &.showing {
+      transition-duration: 1ms;
+    }
+  }
+}

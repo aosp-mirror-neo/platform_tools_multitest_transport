@@ -29,6 +29,7 @@ sass_library(
 ng_module(
     name = "shared",
     srcs = [
+        "app_backdrop_service.ts",
         "breadcrumb.ts",
         "can_deactivate.ts",
         "file_size_pipe.ts",
@@ -142,6 +143,7 @@ ng_module(
     name = "tests",
     testonly = True,
     srcs = [
+        "app_backdrop_service_test.ts",
         "breadcrumb_test.ts",
         "can_deactivate_test.ts",
         "file_size_pipe_test.ts",

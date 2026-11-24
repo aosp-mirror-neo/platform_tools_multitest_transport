@@ -14,7 +14,7 @@
  limitations under the License.
 -->
 
-<mat-toolbar>
+<mat-toolbar [attr.inert]="(appBackdropService.state$ | async)?.visible ? '' : null">
   <button
     class="toggleSidenavButton"
     mat-icon-button
@@ -49,7 +49,12 @@
 
 <mat-sidenav-container [class.collapsed]="!sideNavExpanded">
   <!--Sidenav menu-->
-  <mat-sidenav mode="side" opened role="navigation">
+  <mat-sidenav
+    mode="side"
+    opened
+    role="navigation"
+    [attr.inert]="(appBackdropService.state$ | async)?.visible ? '' : null"
+  >
     <div class="sidenav-container">
       <mat-nav-list>
         <h3 matSubheader>
@@ -231,7 +236,7 @@
     <main cdkScrollable>
       <router-outlet></router-outlet>
     </main>
-    <footer>
+    <footer [attr.inert]="(appBackdropService.state$ | async)?.visible ? '' : null">
       <div class="version-info">
         <span>Version: {{ appData?.mttVersion }}</span>
         <span class="separator"></span>
@@ -248,3 +253,18 @@
     </footer>
   </mat-sidenav-content>
 </mat-sidenav-container>
+
+<!--
+  Dims the whole app while a dialog of the embedded Lab Console (V6) iframe is
+  open: the dialog's own backdrop only covers the iframe, so this one covers the
+  rest of the page, leaving out the area of the iframe (see AppBackdropService).
+  Mousedown is ignored to keep the focus in the iframe, e.g. so that Escape still
+  closes the dialog.
+-->
+<div
+  *ngIf="appBackdropService.state$ | async as backdrop"
+  class="app-backdrop"
+  [class.showing]="backdrop.visible"
+  [style.clip-path]="backdrop.clipPath"
+  (mousedown)="$event.preventDefault()"
+></div>

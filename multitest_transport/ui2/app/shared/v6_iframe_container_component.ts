@@ -42,6 +42,7 @@ import {
 } from '../services/navigation_event_service';
 import {PreferenceService} from '../services/preference_service';
 
+import {AppBackdropService} from './app_backdrop_service';
 import {HeaderSlotService} from './header_slot_service';
 import {EntityType, MessagePage, V6NavigationService} from './navigation';
 
@@ -55,6 +56,11 @@ export const EMBEDDED_HEADER_SLOT_REQUEST_MESSAGE =
   'EMBEDDED_HEADER_SLOT_REQUEST';
 /** Class set on the iframe while it paints into the app header slot. */
 export const HEADER_SEARCH_MODE_CLASS = 'header-search-mode';
+/**
+ * Message sent by the iframe when the backdrop of its dialogs is shown or
+ * hidden.
+ */
+export const EMBEDDED_BACKDROP_CHANGED_MESSAGE = 'EMBEDDED_BACKDROP_CHANGED';
 
 /** Messages this container sends to the Lab Console iframe. */
 type IframeMessage =
@@ -114,6 +120,7 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
   protected readonly navigationEventService = inject(NavigationEventService);
   private readonly v6NavigationService = inject(V6NavigationService);
   private readonly headerSlotService = inject(HeaderSlotService);
+  private readonly appBackdropService = inject(AppBackdropService);
   private readonly ngZone = inject(NgZone);
   private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
 
@@ -122,9 +129,25 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
   private layoutFrame = 0;
   /** Last header slot geometry sent to the iframe, as a comparable key. */
   private lastPostedSlot = '';
+  /**
+   * Whether a dialog of the Lab Console shows its backdrop
+   * (EMBEDDED_BACKDROP_CHANGED message), which the app backdrop then extends
+   * to the rest of the page (see updateAppBackdrop).
+   */
+  private isIframeBackdropVisible = false;
+  /**
+   * Visible area of the iframe in the header search mode, as a polygon in
+   * viewport px (see updateHeaderSlotLayout). Only valid while the iframe has
+   * the header search mode class.
+   */
+  private headerSearchVisibleArea: Array<[number, number]> | null = null;
 
   @ViewChild('iframe')
   set iframe(ref: ElementRef<HTMLIFrameElement> | undefined) {
+    if (ref?.nativeElement !== this.iframeRef?.nativeElement) {
+      // A new (or no) iframe document has no dialog open.
+      this.resetIframeBackdrop();
+    }
     this.iframeRef = ref;
     this.lastPostedSlot = '';
     this.scheduleHeaderSlotLayoutUpdate();
@@ -327,6 +350,7 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
     if (this.layoutFrame) {
       cancelAnimationFrame(this.layoutFrame);
     }
+    this.resetIframeBackdrop();
     this.destroy.next();
     this.destroy.complete();
   }
@@ -376,6 +400,10 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
       this.layoutFrame = requestAnimationFrame(() => {
         this.layoutFrame = 0;
         this.updateHeaderSlotLayout();
+        if (this.isIframeBackdropVisible) {
+          // The layout may have moved the iframe: keep the hole on it.
+          this.updateAppBackdrop();
+        }
       });
     });
   }
@@ -463,17 +491,28 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
       Math.max(slotLeft, Math.round(slotRect.right - host.left)),
     );
 
+    const left = Math.round(host.left);
     iframe.classList.add(HEADER_SEARCH_MODE_CLASS);
-    iframe.style.left = `${Math.round(host.left)}px`;
+    iframe.style.left = `${left}px`;
     iframe.style.width = `${width}px`;
     iframe.style.height = `${height}px`;
     // Visible area = the slot column inside the header + the whole content
     // area below the header (an upside-down "T"), as a clockwise polygon
     // starting at the bottom-left corner of the header.
-    iframe.style.clipPath =
-      `polygon(0 ${headerHeight}px, ${slotLeft}px ${headerHeight}px, ` +
-      `${slotLeft}px 0, ${slotRight}px 0, ${slotRight}px ${headerHeight}px, ` +
-      `${width}px ${headerHeight}px, ${width}px ${height}px, 0 ${height}px)`;
+    const visibleArea: Array<[number, number]> = [
+      [0, headerHeight],
+      [slotLeft, headerHeight],
+      [slotLeft, 0],
+      [slotRight, 0],
+      [slotRight, headerHeight],
+      [width, headerHeight],
+      [width, height],
+      [0, height],
+    ];
+    iframe.style.clipPath = `polygon(${toPolygonPoints(visibleArea)})`;
+    // The same area in viewport px (the iframe is fixed at the top of the
+    // viewport), left out by the app backdrop while a dialog is open.
+    this.headerSearchVisibleArea = visibleArea.map(([x, y]) => [x + left, y]);
 
     const toolbar = slot.closest('mat-toolbar') ?? slot;
     const message: IframeMessage = {
@@ -488,6 +527,132 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
       this.lastPostedSlot = key;
       this.postMessageToIframe(message);
     }
+  }
+
+  /**
+   * Extends the backdrop of the Lab Console's dialogs to the whole app.
+   *
+   * Explanation:
+   * The dialog's own backdrop only covers the iframe, so while it is shown
+   * AppBackdropService dims the rest of the app (side navigation, header,
+   * footer). The clip-path of that backdrop is the whole viewport minus the
+   * area in which the iframe is visible: the polygon the iframe is clipped to
+   * on the search pages, the iframe box on the detail pages. With the evenodd
+   * fill rule the hole is cut out, while the zero-width connection between the
+   * two outlines adds no area. The hole is neither painted nor hit-tested, so
+   * the dialog in the iframe stays fully usable.
+   */
+  private updateAppBackdrop(): void {
+    const area = this.isIframeBackdropVisible
+      ? this.getIframeVisibleArea()
+      : null;
+    if (!area) {
+      // If the iframe is not visible (or none of its dialogs shows a
+      // backdrop), we hide the app backdrop if it was shown.
+      if (this.appBackdropService.state$.value.visible) {
+        this.ngZone.run(() => {
+          this.appBackdropService.hide();
+        });
+      }
+      return;
+    }
+    // Clip-path of the app backdrop: the whole viewport minus the area in
+    // which the iframe is visible (the "hole"), as a single polygon().
+    //
+    // A polygon() is one closed outline, so the two outlines are chained:
+    //   1. the viewport, clockwise from its top-left corner back to it:
+    //      0 0 -> 100% 0 -> 100% 100% -> 0 100% -> 0 0;
+    //   2. a jump from that corner to the first point of the hole, then the
+    //      outline of the hole, closed by repeating its first point;
+    //   3. the jump back to the top-left corner (0 0), where the polygon
+    //      closes.
+    // The jump is drawn twice, in opposite directions, so it encloses no
+    // area. With the evenodd fill rule a point is painted when a ray from it
+    // crosses the outline an odd number of times: a point between the edge of
+    // the viewport and the hole crosses it once (painted, i.e. dimmed), a
+    // point inside the hole crosses it twice (not painted). E.g. the iframe
+    // box 100,64 - 1100,664 of a detail page gives
+    //   polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, 100px 64px,
+    //     1100px 64px, 1100px 664px, 100px 664px, 100px 64px, 0 0)
+    // The viewport corners are in % of the backdrop, which covers the
+    // viewport, so they follow window resizes by themselves; the hole is in
+    // the px measured by the layout.
+    const clipPath =
+      'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ' +
+      `${toPolygonPoints([...area, area[0]])}, 0 0)`;
+    // Nothing to do if the backdrop already shows this hole: while it is
+    // shown, this runs again after every layout update.
+    const state = this.appBackdropService.state$.value;
+    if (state.visible && state.clipPath === clipPath) {
+      return;
+    }
+    // Also called from the layout updates, which run outside the Angular zone:
+    // update the state inside it, so that the change detection that follows
+    // applies it to the backdrop element of the app root.
+    this.ngZone.run(() => {
+      this.appBackdropService.show(clipPath);
+    });
+  }
+
+  /**
+   * Returns the area in which the iframe is visible, as a polygon in viewport
+   * px, or null if the iframe is not rendered.
+   *
+   * Explanation:
+   * - Search pages (header search mode, see updateHeaderSlotLayout): the
+   *   iframe is fixed at the top of the viewport and clipped to an upside-down
+   *   "T", the column of the app header slot plus the whole content area
+   *   below the header. updateHeaderSlotLayout computes that polygon in iframe
+   *   px for the iframe's clip-path, and keeps the same vertices in viewport
+   *   px in headerSearchVisibleArea (x + the iframe's left; y unchanged, as
+   *   the iframe's top is 0), which is returned as is. So the hole of the app
+   *   backdrop matches the clipped iframe exactly, while the parts of the
+   *   header around the slot are dimmed by the app backdrop.
+   * - Detail pages (normal layout): the iframe is a plain, unclipped box in
+   *   the page flow below the header, so its visible area is its bounding box,
+   *   i.e. its four corners clockwise from the top-left one.
+   * headerSearchVisibleArea keeps the polygon of the last search page layout,
+   * so it is only used while the iframe still has the header search mode class
+   * (updateHeaderSlotLayout removes the class in the normal layout).
+   */
+  private getIframeVisibleArea(): Array<[number, number]> | null {
+    const iframe = this.iframeRef?.nativeElement;
+    if (!iframe) {
+      return null;
+    }
+    if (
+      iframe.classList.contains(HEADER_SEARCH_MODE_CLASS) &&
+      this.headerSearchVisibleArea
+    ) {
+      return this.headerSearchVisibleArea;
+    }
+    const {left, top, right, bottom} = iframe.getBoundingClientRect();
+    return [
+      [left, top],
+      [right, top],
+      [right, bottom],
+      [left, bottom],
+    ];
+  }
+
+  /**
+   * Hides the app backdrop of an iframe document that is gone (the iframe was
+   * removed or reloaded, or this container is destroyed): it can no longer
+   * report that its dialogs are closed.
+   */
+  private resetIframeBackdrop(): void {
+    if (!this.isIframeBackdropVisible) {
+      return;
+    }
+    this.isIframeBackdropVisible = false;
+    // Called during change detection (view query, destroy hook): update the
+    // app root's binding after the current check, unless a new dialog has
+    // shown the backdrop again in the meantime.
+    Promise.resolve().then(() => {
+      if (!this.isIframeBackdropVisible) {
+        this.appBackdropService.hide();
+      }
+    });
   }
 
   /**
@@ -527,6 +692,8 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
    * - GET_EXTERNAL_URL: Posts back the external URL to iframe for the requested page.
    * - SEARCH_STATE_CHANGED: Updates the parent router query params when iframe search state changes.
    * - NAVIGATED: Updates the parent router URL when iframe navigates to a new page.
+   * - EMBEDDED_BACKDROP_CHANGED: Shows / hides the app backdrop together with
+   *   the backdrop of the iframe's dialogs.
    */
   @HostListener('window:message', ['$event'])
   onMessage(event: MessageEvent): void {
@@ -563,8 +730,37 @@ export class V6IframeContainerComponent implements OnInit, OnDestroy {
       this.router.navigateByUrl(fullUrl);
     } else if (data.type === EMBEDDED_HEADER_SLOT_REQUEST_MESSAGE) {
       this.updateHeaderSlotLayout(/* forcePost= */ true);
+    } else if (data.type === EMBEDDED_BACKDROP_CHANGED_MESSAGE) {
+      this.isIframeBackdropVisible = data.visible === true;
+      this.updateAppBackdrop();
     } else {
       console.error('Unknown message type:', data.type, data);
     }
   }
+
+  /**
+   * Handles a (re)load of the iframe document.
+   *
+   * Explanation:
+   * A freshly loaded Lab Console has no dialog open, so an app backdrop left
+   * by the previous document is hidden.
+   */
+  onIframeLoad(): void {
+    this.resetIframeBackdrop();
+  }
+}
+
+/**
+ * Formats polygon vertices in px as the point list of a CSS polygon().
+ *
+ * Explanation:
+ * Each [x, y] vertex becomes "<x>px <y>px" and the vertices are joined with
+ * ", ", e.g. [[0, 64], [200, 64], [200, 0]] gives
+ * "0px 64px, 200px 64px, 200px 0px". The caller wraps the list in polygon():
+ * it builds both the iframe's own clip-path (in iframe px) and the hole in
+ * the app backdrop's clip-path (in viewport px) from the same vertices. The px
+ * unit is always written, as CSS only accepts a length without unit for 0.
+ */
+function toPolygonPoints(points: Array<[number, number]>): string {
+  return points.map(([x, y]) => `${x}px ${y}px`).join(', ');
 }

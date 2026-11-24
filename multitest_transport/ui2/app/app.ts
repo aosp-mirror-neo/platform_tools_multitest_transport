@@ -63,6 +63,7 @@ import {SettingForm} from './settings/setting_form';
 import {SettingPage} from './settings/setting_page';
 import {SetupWizardDialog} from './setup_wizard/setup_wizard_dialog';
 import {SetupWizardModule} from './setup_wizard/setup_wizard_module';
+import {AppBackdropService} from './shared/app_backdrop_service';
 import {UnsavedChangeGuard} from './shared/can_deactivate';
 import {HeaderSlotService} from './shared/header_slot_service';
 import {SharedModule} from './shared/shared_module';
@@ -274,6 +275,7 @@ export class Mtt implements OnDestroy, OnInit {
       readonly userService: UserService,
       readonly preferenceService: PreferenceService,
       readonly headerSlotService: HeaderSlotService,
+      readonly appBackdropService: AppBackdropService,
       @Inject(APP_DATA) readonly appData: AppData,
   ) {
     this.showLabConsoleToggle$ = this.router.events.pipe(

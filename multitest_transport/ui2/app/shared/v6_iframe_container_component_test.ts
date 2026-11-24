@@ -18,6 +18,7 @@ import {ElementRef} from '@angular/core';
 import {
   ComponentFixture,
   fakeAsync,
+  flushMicrotasks,
   TestBed,
   tick,
 } from '@angular/core/testing';
@@ -37,8 +38,10 @@ import {
   NavigationTarget,
 } from '../services/navigation_event_service';
 import {PreferenceService} from '../services/preference_service';
+import {AppBackdropService} from './app_backdrop_service';
 import {HeaderSlotService} from './header_slot_service';
 import {
+  EMBEDDED_BACKDROP_CHANGED_MESSAGE,
   EMBEDDED_HEADER_SLOT_MESSAGE,
   EMBEDDED_HEADER_SLOT_REQUEST_MESSAGE,
   EntityType,
@@ -473,6 +476,245 @@ describe('V6IframeContainerComponent', () => {
       await nextFrame();
       expect(update).toHaveBeenCalledTimes(2);
     });
+  });
+
+  describe('app backdrop', () => {
+    let appBackdropService: AppBackdropService;
+    let headerSlotService: HeaderSlotService;
+    let slot: HTMLElement;
+    let iframeEl: HTMLIFrameElement;
+    let hostRect: jasmine.Spy;
+
+    function sendBackdropChanged(
+      visible: boolean,
+      origin = window.location.origin,
+    ) {
+      component.onMessage({
+        origin,
+        data: {type: EMBEDDED_BACKDROP_CHANGED_MESSAGE, visible},
+      } as MessageEvent);
+    }
+
+    beforeEach(() => {
+      appBackdropService = TestBed.inject(AppBackdropService);
+      headerSlotService = TestBed.inject(HeaderSlotService);
+      slot = document.createElement('div');
+      slot.style.cssText =
+        'position: fixed; left: 300px; top: 10px; width: 500px; height: 40px;';
+      document.body.appendChild(slot);
+      iframeEl = document.createElement('iframe');
+      document.body.appendChild(iframeEl);
+      component.iframe = {nativeElement: iframeEl};
+      // This container sits right below a 64px app header.
+      hostRect = spyOn(
+        fixture.nativeElement,
+        'getBoundingClientRect',
+      ).and.returnValue({
+        left: 100,
+        top: 64,
+        right: 1100,
+        bottom: 664,
+        width: 1000,
+        height: 600,
+      } as DOMRect);
+    });
+
+    afterEach(() => {
+      slot.remove();
+      iframeEl.remove();
+      headerSlotService.setSlotElement(null);
+    });
+
+    it('dims the whole page except the iframe box on detail pages', () => {
+      spyOnProperty(component, 'isDetailPage', 'get').and.returnValue(true);
+      spyOn(iframeEl, 'getBoundingClientRect').and.returnValue({
+        left: 100,
+        top: 64,
+        right: 1100,
+        bottom: 664,
+      } as DOMRect);
+
+      sendBackdropChanged(true);
+
+      // The viewport, then the hole: the iframe box.
+      expect(appBackdropService.state$.value).toEqual({
+        visible: true,
+        clipPath:
+          'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ' +
+          '100px 64px, 1100px 64px, 1100px 664px, 100px 664px, 100px 64px, ' +
+          '0 0)',
+      });
+    });
+
+    it('dims the whole page except the header slot and the content area on search pages', () => {
+      spyOnProperty(component, 'isDetailPage', 'get').and.returnValue(false);
+      headerSlotService.setSlotElement(slot);
+      component.updateHeaderSlotLayout();
+
+      sendBackdropChanged(true);
+
+      // The viewport, then the hole: the polygon the iframe is clipped to, in
+      // viewport px.
+      expect(appBackdropService.state$.value).toEqual({
+        visible: true,
+        clipPath:
+          'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ' +
+          '100px 64px, 300px 64px, 300px 0px, 800px 0px, 800px 64px, ' +
+          '1100px 64px, 1100px 664px, 100px 664px, 100px 64px, 0 0)',
+      });
+    });
+
+    it('hides the backdrop together with the backdrop of the iframe dialogs', () => {
+      sendBackdropChanged(true);
+      expect(appBackdropService.state$.value.visible).toBeTrue();
+
+      sendBackdropChanged(false);
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    });
+
+    it('ignores backdrop changes from other origins', () => {
+      sendBackdropChanged(true, 'https://evil.example');
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    });
+
+    it('keeps the hole on the iframe when the layout changes', async () => {
+      // Not under test: a load of the template's iframe hides the backdrop.
+      spyOn(component, 'onIframeLoad');
+      spyOnProperty(component, 'isDetailPage', 'get').and.returnValue(false);
+      headerSlotService.setSlotElement(slot);
+      component.updateHeaderSlotLayout();
+      sendBackdropChanged(true);
+
+      // The side navigation collapses: this container moves to the left.
+      hostRect.and.returnValue({
+        left: 56,
+        top: 64,
+        right: 1100,
+        bottom: 664,
+        width: 1044,
+        height: 600,
+      } as DOMRect);
+      (router.events as Subject<RouterEvent>).next(
+        new NavigationEnd(1, '/devices', '/devices'),
+      );
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+
+      expect(appBackdropService.state$.value).toEqual({
+        visible: true,
+        clipPath:
+          'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ' +
+          '56px 64px, 300px 64px, 300px 0px, 800px 0px, 800px 64px, ' +
+          '1100px 64px, 1100px 664px, 56px 664px, 56px 64px, 0 0)',
+      });
+    });
+
+    it('hides the backdrop when the iframe document is reloaded', fakeAsync(() => {
+      sendBackdropChanged(true);
+
+      const templateIframe: HTMLIFrameElement =
+        fixture.nativeElement.querySelector('iframe');
+      templateIframe.dispatchEvent(new Event('load'));
+      flushMicrotasks();
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    }));
+
+    it('hides the backdrop when the iframe is removed', fakeAsync(() => {
+      sendBackdropChanged(true);
+
+      component.iframe = undefined;
+      flushMicrotasks();
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    }));
+
+    it('hides the backdrop when the container is destroyed', fakeAsync(() => {
+      sendBackdropChanged(true);
+
+      fixture.destroy();
+      flushMicrotasks();
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    }));
+
+    it('dims the whole page except the iframe box after switching from a search page to a detail page', () => {
+      const isDetailPage = spyOnProperty(component, 'isDetailPage', 'get');
+      isDetailPage.and.returnValue(false);
+      headerSlotService.setSlotElement(slot);
+      component.updateHeaderSlotLayout();
+      isDetailPage.and.returnValue(true);
+      component.updateHeaderSlotLayout();
+      spyOn(iframeEl, 'getBoundingClientRect').and.returnValue({
+        left: 100,
+        top: 64,
+        right: 1100,
+        bottom: 664,
+      } as DOMRect);
+
+      sendBackdropChanged(true);
+
+      // The iframe box, not the "T" of the previous search page layout.
+      expect(appBackdropService.state$.value.clipPath).toBe(
+        'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ' +
+          '100px 64px, 1100px 64px, 1100px 664px, 100px 664px, 100px 64px, ' +
+          '0 0)',
+      );
+    });
+
+    it('does not update the backdrop again when its hole is unchanged', () => {
+      const show = spyOn(appBackdropService, 'show').and.callThrough();
+
+      sendBackdropChanged(true);
+      sendBackdropChanged(true);
+
+      expect(show).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not show the backdrop when no iframe is rendered', () => {
+      component.iframe = undefined;
+
+      sendBackdropChanged(true);
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    });
+
+    it('keeps the backdrop hidden on later layout updates after the iframe document is reloaded', async () => {
+      sendBackdropChanged(true);
+      component.onIframeLoad();
+      await Promise.resolve();
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+
+      // The reloaded document has no dialog open: a layout update must not
+      // bring the backdrop back.
+      (router.events as Subject<RouterEvent>).next(
+        new NavigationEnd(1, '/devices', '/devices'),
+      );
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          resolve();
+        });
+      });
+
+      expect(appBackdropService.state$.value.visible).toBeFalse();
+    });
+
+    it('keeps the backdrop visible if a new dialog opens before a reset microtask flushes', fakeAsync(() => {
+      sendBackdropChanged(true);
+
+      const templateIframe: HTMLIFrameElement =
+        fixture.nativeElement.querySelector('iframe');
+      templateIframe.dispatchEvent(new Event('load'));
+      sendBackdropChanged(true);
+      flushMicrotasks();
+
+      expect(appBackdropService.state$.value.visible).toBeTrue();
+    }));
   });
 
   describe('navMenuClick$', () => {
