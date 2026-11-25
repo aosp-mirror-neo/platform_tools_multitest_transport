@@ -24,6 +24,38 @@ Error = docker_image.Error
 DockerImageExecutor = docker_image.DockerImageExecutor
 
 
+class GetRepositoryBaseNameTest(absltest.TestCase):
+
+  def testStripsRegistryPathAndTag(self):
+    self.assertEqual(
+        docker_image.GetRepositoryBaseName(
+            "us-docker.pkg.dev/proj/dualconduit/dialer:v1"
+        ),
+        "dialer",
+    )
+
+  def testStripsDigest(self):
+    self.assertEqual(
+        docker_image.GetRepositoryBaseName(
+            "us-docker.pkg.dev/proj/dualconduit/acceptor@sha256:abc"
+        ),
+        "acceptor",
+    )
+
+  def testRegistryPortIsNotMistakenForTag(self):
+    self.assertEqual(
+        docker_image.GetRepositoryBaseName("localhost:5000/dialer"), "dialer"
+    )
+
+  def testBareNameAndTag(self):
+    self.assertEqual(docker_image.GetRepositoryBaseName("mtt:latest"), "mtt")
+
+  def testBareDigestNamesNoRepository(self):
+    self.assertEqual(
+        docker_image.GetRepositoryBaseName("sha256:abc"), "sha256"
+    )
+
+
 class DockerImageTest(absltest.TestCase):
 
   def setUp(self):

@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 from multitest_transport.cli import command_util
 from multitest_transport.cli import common
 import yaml
@@ -143,8 +143,23 @@ class DockerComposeExecutor:
       pull: Optional[str] = None,
       services: Sequence[str] = (),
       timeout_sec: int = 60,
+      env: Optional[Mapping[str, str]] = None,
   ) -> common.CommandResult:
-    """Pure CLI wrapper for `docker compose up`."""
+    """Pure CLI wrapper for `docker compose up`.
+
+    Args:
+      detach: Passes `-d`.
+      wait: Passes `--wait`.
+      wait_timeout_sec: Value for `--wait-timeout`, used only with `wait`.
+      pull: Value for `--pull`, or None to leave it unset.
+      services: Services to start, or empty for all of the selected profiles.
+      timeout_sec: Kills the command after this many seconds.
+      env: Extra process environment variables. Compose interpolation prefers
+        them over the values in the env file.
+
+    Returns:
+      The command result.
+    """
     args = self._BuildBaseArgs(self._config) + ["up"]
     if detach:
       args.append("-d")
@@ -157,10 +172,20 @@ class DockerComposeExecutor:
     if services:
       args.extend(services)
 
-    logger.info("Running docker compose up: %s", " ".join(args))
-    return self._docker_context.Run(
-        args, raise_on_failure=False, timeout=timeout_sec
-    )
+    run_kwargs: dict[str, Any] = {
+        "raise_on_failure": False,
+        "timeout": timeout_sec,
+    }
+    if env:
+      run_kwargs["env"] = dict(env)
+      logger.info(
+          "Running docker compose up with env overrides %s: %s",
+          run_kwargs["env"],
+          " ".join(args),
+      )
+    else:
+      logger.info("Running docker compose up: %s", " ".join(args))
+    return self._docker_context.Run(args, **run_kwargs)
 
   def _Down(
       self,
@@ -313,8 +338,21 @@ class DockerComposeExecutor:
       wait_timeout_sec: Optional[int] = None,
       pull: Optional[str] = None,
       services: Sequence[str] = (),
+      env: Optional[Mapping[str, str]] = None,
   ) -> ExecutionResult:
-    """Starts compose services and blocks until healthy via `--wait`."""
+    """Starts compose services and blocks until healthy via `--wait`.
+
+    Args:
+      timeout_sec: Kills `docker compose up` after this many seconds.
+      wait_timeout_sec: Value for `--wait-timeout`, or None to leave it unset.
+      pull: Value for `--pull`, or None to leave it unset.
+      services: Services to start, or empty for all of the selected profiles.
+      env: Extra process environment variables, which compose interpolation
+        prefers over the values in the env file.
+
+    Returns:
+      The result, with failed_services diagnostics when `up` failed.
+    """
     cmd_res = self._Up(
         detach=True,
         wait=True,
@@ -322,6 +360,7 @@ class DockerComposeExecutor:
         pull=pull,
         services=services,
         timeout_sec=timeout_sec,
+        env=env,
     )
     failed_services = {}
     if cmd_res.return_code != 0:

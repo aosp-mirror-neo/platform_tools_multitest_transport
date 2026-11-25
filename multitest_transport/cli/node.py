@@ -536,7 +536,8 @@ def _HandleStatus(args: argparse.Namespace, role: NodeRole) -> int:
 def _HandleTunnelUpgrade(args: argparse.Namespace, role: NodeRole) -> int:
   """Handler for `mtt node <role> tunnel upgrade`."""
   mgr = _GetStateManager(args, role)
-  return 0 if mgr.UpgradeTunnel() else 1
+  image_ref = getattr(args, "image_ref", None)
+  return 0 if mgr.UpgradeTunnel(image_ref=image_ref) else 1
 
 
 @_RequiresMembership
@@ -792,6 +793,20 @@ def _AddLifecycleCommands(subparsers: Any, role: NodeRole) -> None:
       type=str,
       default=node_init.DEFAULT_STATIC_DIR,
       help="Static directory.",
+  )
+  dcon_service = "acceptor" if role == NodeRole.CONTROLLER else "dialer"
+  tunnel_up.add_argument(
+      "--image_ref",
+      type=str,
+      default=None,
+      help=(
+          "One-time container image reference for the DualConduit"
+          f" {dcon_service} (for example,"
+          f" repo/dualconduit/{dcon_service}:tag or"
+          f" repo/dualconduit/{dcon_service}@sha256:...), overriding the"
+          " default for this upgrade only. The repository path must end in"
+          f" '/{dcon_service}'."
+      ),
   )
   tunnel_up.set_defaults(
       func=lambda args, role=role: _HandleTunnelUpgrade(args, role)

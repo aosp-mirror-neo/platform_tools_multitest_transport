@@ -55,6 +55,23 @@ def _ExtractRegistryServer(image_or_repo: str) -> Optional[str]:
   return None
 
 
+def GetRepositoryBaseName(image_ref: str) -> str:
+  """Returns the last path component of an image reference's repository.
+
+  For example, `us-docker.pkg.dev/proj/dualconduit/dialer:v1` and
+  `localhost:5000/dialer@sha256:...` both yield `dialer`. A bare digest or
+  image ID such as `sha256:...` names no repository and yields `sha256`.
+
+  Args:
+    image_ref: A container image reference.
+
+  Returns:
+    The repository's last path component, without tag or digest.
+  """
+  name = image_ref.strip().split("@", 1)[0]
+  return name.rsplit("/", 1)[-1].split(":", 1)[0]
+
+
 class ContainerStatus(enum.Enum):
   """Data-plane running and health status of a Docker container."""
 

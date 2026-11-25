@@ -678,7 +678,29 @@ class NodeCliTest(absltest.TestCase):
     args = self.parser.parse_args(["node", "worker", "tunnel", "upgrade"])
     exit_code = args.func(args)
     self.assertEqual(exit_code, 0)
-    mock_mgr.UpgradeTunnel.assert_called_once()
+    mock_mgr.UpgradeTunnel.assert_called_once_with(image_ref=None)
+
+  @mock.patch.object(node, "_DefaultStateManagerFactory")
+  def testHandleTunnelUpgrade_withImageRef(self, mock_factory):
+    mock_mgr = mock.create_autospec(
+        node_state.NodeStateManager, instance=True, spec_set=True
+    )
+    mock_mgr.UpgradeTunnel.return_value = True
+    mock_factory.return_value = mock_mgr
+
+    args = self.parser.parse_args([
+        "node",
+        "controller",
+        "tunnel",
+        "upgrade",
+        "--image_ref",
+        "repo/dualconduit/acceptor:v2",
+    ])
+    exit_code = args.func(args)
+    self.assertEqual(exit_code, 0)
+    mock_mgr.UpgradeTunnel.assert_called_once_with(
+        image_ref="repo/dualconduit/acceptor:v2"
+    )
 
   @mock.patch.object(node, "_DefaultStateManagerFactory")
   def testHandleCoreUpgrade(self, mock_factory):

@@ -1,7 +1,10 @@
 services:
+  # DCON_ACCEPTOR_IMAGE and DCON_DIALER_IMAGE are one-time overrides that
+  # `mtt node <role> tunnel upgrade --image_ref` passes through the process
+  # environment, which takes precedence over the env file.
   # Controller profile services
   acceptor:
-    image: ${DCON_REPO:-us-docker.pkg.dev/android-mtt}/dualconduit/acceptor:latest
+    image: ${DCON_ACCEPTOR_IMAGE:-${DCON_REPO:-us-docker.pkg.dev/android-mtt}/dualconduit/acceptor:latest}
     container_name: acceptor
     profiles:
       - controller
@@ -18,7 +21,7 @@ services:
 
   # Worker profile services
   dialer:
-    image: ${DCON_REPO:-us-docker.pkg.dev/android-mtt}/dualconduit/dialer:latest
+    image: ${DCON_DIALER_IMAGE:-${DCON_REPO:-us-docker.pkg.dev/android-mtt}/dualconduit/dialer:latest}
     container_name: dialer
     hostname: ${HOSTNAME:-}
     profiles:

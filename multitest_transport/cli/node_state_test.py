@@ -438,7 +438,7 @@ class NodeStateTest(absltest.TestCase):
     self.assertTrue(success)
     self.assertTrue(self.release_mgr.has_active_release)
     self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
-        pull=None
+        pull=None, env=None
     )
     self.assertTrue(
         os.path.exists(self.release_mgr.tunnel_compose_env_path)
@@ -901,7 +901,7 @@ class NodeStateTest(absltest.TestCase):
 
     self.assertTrue(success)
     self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
-        pull=None
+        pull=None, env=None
     )
 
   # ==========================================================================
@@ -1303,7 +1303,7 @@ class NodeStateTest(absltest.TestCase):
 
     self.assertTrue(success)
     self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
-        pull="always"
+        pull="always", env=None
     )
     self.assertEqual(
         self._JournalSteps(),
@@ -1340,6 +1340,123 @@ class NodeStateTest(absltest.TestCase):
     self.assertFalse(success)
     self.mock_stop_executor.Stop.assert_called_once()
     self.assertEqual(self._JournalSteps()[-1], "StartTunnel")
+
+  @mock.patch.object(process_executor.MttExecutor, "FromConfigFiles")
+  def testUpgradeTunnel_imageRefOverridesDialerImageOnce(
+      self, mock_from_config_files
+  ):
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig()
+    secrets_dir = os.path.join(self.static_dir, "secrets")
+    os.makedirs(secrets_dir, exist_ok=True)
+    sa_key_path = os.path.join(secrets_dir, "sa-key.json")
+    with open(sa_key_path, "w", encoding="utf-8") as f:
+      f.write("{}")
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+    mock_from_config_files.return_value = self._MockCore()
+    image_ref = "us-docker.pkg.dev/proj/dualconduit/dialer@sha256:abc"
+
+    success = self.state_mgr.UpgradeTunnel(image_ref=image_ref)
+
+    self.assertTrue(success)
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
+        pull="always", env={"DCON_DIALER_IMAGE": image_ref}
+    )
+    # Docker logs in to the override's registry, not DCON_REPO's.
+    self.mock_image_executor.LoginWithServiceAccount.assert_called_once_with(
+        sa_key_path, image_ref
+    )
+    # One-time: the override is not written into the recorded env.
+    with open(
+        self.release_mgr.tunnel_compose_env_path, "r", encoding="utf-8"
+    ) as f:
+      self.assertNotIn("DCON_DIALER_IMAGE", f.read())
+    self.mock_stop_executor.Stop.assert_called_once()
+
+  def testUpgradeTunnel_workerRejectsAcceptorImageBeforeActing(self):
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig()
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+
+    success = self.state_mgr.UpgradeTunnel(
+        image_ref="us-docker.pkg.dev/proj/dualconduit/acceptor:v2"
+    )
+
+    self.assertFalse(success)
+    self.assertEqual(self._JournalSteps(), [])
+    self.mock_stop_executor.Stop.assert_not_called()
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_not_called()
+
+  def testUpgradeTunnel_bareDigestImageRefIsRejected(self):
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig()
+
+    success = self.state_mgr.UpgradeTunnel(image_ref="sha256:abc")
+
+    self.assertFalse(success)
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_not_called()
+
+  def testUpgradeTunnel_slashlessRepositoryIsRejected(self):
+    # `--pull always` would resolve `dialer:v2` against Docker Hub.
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig()
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+
+    success = self.state_mgr.UpgradeTunnel(image_ref="dialer:v2")
+
+    self.assertFalse(success)
+    self.assertEqual(self._JournalSteps(), [])
+    self.mock_stop_executor.Stop.assert_not_called()
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_not_called()
+
+  def _ControllerStateManager(self) -> NodeStateManager:
+    return NodeStateManager(
+        base_dir=self.test_dir,
+        static_dir=self.static_dir,
+        release_mgr=self.release_mgr,
+        compose_mgr=self.compose_mgr,
+        image_executor=self.mock_image_executor,
+        role=NodeRole.CONTROLLER,
+    )
+
+  @mock.patch.object(process_executor.MttExecutor, "FromConfigFiles")
+  def testUpgradeTunnel_controllerImageRefOverridesAcceptorImage(
+      self, mock_from_config_files
+  ):
+    controller_mgr = self._ControllerStateManager()
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig(image_name="mtt-controller", is_controller=True)
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+    mock_from_config_files.return_value = self._MockCore()
+    image_ref = "us-docker.pkg.dev/proj/dualconduit/acceptor:v2"
+
+    success = controller_mgr.UpgradeTunnel(image_ref=image_ref)
+
+    self.assertTrue(success)
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
+        pull="always", env={"DCON_ACCEPTOR_IMAGE": image_ref}
+    )
+    self.mock_stop_executor.Stop.assert_called_once()
+
+  def testUpgradeTunnel_controllerRejectsDialerImage(self):
+    controller_mgr = self._ControllerStateManager()
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig(image_name="mtt-controller", is_controller=True)
+
+    success = controller_mgr.UpgradeTunnel(
+        image_ref="us-docker.pkg.dev/proj/dualconduit/dialer:v2"
+    )
+
+    self.assertFalse(success)
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_not_called()
 
   # ==========================================================================
   # Config validation

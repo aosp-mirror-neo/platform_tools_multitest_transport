@@ -65,6 +65,17 @@ _ENV_OVERLAY_COMPOSE_FILES: dict[str, str] = {
     host_env_lib.HostEnvironment.GCE.value: "docker-compose.gce.yml",
 }
 
+# The DualConduit service each role runs, and the compose variable that
+# overrides its image (see compose/infra/dcon.yml).
+_DCON_SERVICE_BY_ROLE: dict[node_config.NodeRole, str] = {
+    node_config.NodeRole.CONTROLLER: "acceptor",
+    node_config.NodeRole.WORKER: "dialer",
+}
+_DCON_IMAGE_ENV_BY_SERVICE: dict[str, str] = {
+    "acceptor": "DCON_ACCEPTOR_IMAGE",
+    "dialer": "DCON_DIALER_IMAGE",
+}
+
 
 class TerminalAbortError(Exception):
   """Raised internally to immediately abort pipeline execution on failure."""
@@ -971,7 +982,9 @@ class NodeStateManager:
     return BlockResult(True)
 
   @Block
-  def _StartTunnel(self, pull: Optional[str] = None) -> BlockResult:
+  def _StartTunnel(
+      self, pull: Optional[str] = None, dcon_image: Optional[str] = None
+  ) -> BlockResult:
     """Starts the tunnel sidecars from the desired env and awaits healthiness.
 
     Args:
@@ -980,15 +993,29 @@ class NodeStateManager:
         passes a value: on `start`, re-pulling would recreate the sidecars
         whenever a new image was published, which by the coordination rule
         would restart a serving core.
+      dcon_image: One-time image reference for this role's DualConduit service
+        (acceptor or dialer), or None to use the compose default. It is passed
+        through the process environment only and is not recorded, so a later
+        start that recreates the sidecars uses the default again.
 
     Returns:
       A failed BlockResult when the sidecars did not become healthy.
     """
+    env: dict[str, str] = {}
+    if dcon_image:
+      service = _DCON_SERVICE_BY_ROLE.get(self._role)
+      if service is None:
+        return BlockResult(
+            False,
+            error_message=f"No DualConduit service for role {self._role!r}",
+        )
+      env[_DCON_IMAGE_ENV_BY_SERVICE[service]] = dcon_image
+
     sa_key_path = self._ResolveServiceAccountKeyPath()
     if sa_key_path:
       try:
         self._image_executor.LoginWithServiceAccount(
-            sa_key_path, self._ResolveTunnelRepo()
+            sa_key_path, dcon_image or self._ResolveTunnelRepo()
         )
       except docker_image.Error as e:
         logger.error("Failed to authenticate Docker for tunnel images: %s", e)
@@ -997,7 +1024,7 @@ class NodeStateManager:
     compose_executor = self._GetTunnelComposeExecutor(
         self._release_mgr.config_compose_env_path
     )
-    res = compose_executor.StartAndAwaitHealthy(pull=pull)
+    res = compose_executor.StartAndAwaitHealthy(pull=pull, env=env or None)
     if not res.success:
       return BlockResult(
           False,
@@ -1171,17 +1198,20 @@ class NodeStateManager:
     if not res.success:
       raise TerminalAbortError
 
-  def _StartTunnelGroup(self, pull: Optional[str] = None) -> None:
+  def _StartTunnelGroup(
+      self, pull: Optional[str] = None, dcon_image: Optional[str] = None
+  ) -> None:
     """Brings the tunnel up and records the environment it now runs with.
 
     Args:
       pull: Value for `docker compose up --pull`, or None.
+      dcon_image: One-time DualConduit image override, or None.
 
     Raises:
       TerminalAbortError: If any block failed.
     """
     self._Require(self._StageComposeFiles())
-    self._Require(self._StartTunnel(pull=pull))
+    self._Require(self._StartTunnel(pull=pull, dcon_image=dcon_image))
     self._Require(self._RecordAppliedTunnelEnv())
 
   # ==========================================================================
@@ -1460,16 +1490,42 @@ class NodeStateManager:
     return False
 
   @Pipeline
-  def UpgradeTunnel(self) -> bool:
+  def UpgradeTunnel(self, image_ref: Optional[str] = None) -> bool:
     """Applies a new tunnel environment or new sidecar images.
 
     The core is stopped first and started afterwards: it is not left holding
     sockets to sidecars that are being replaced.
 
+    Args:
+      image_ref: One-time image reference for this role's DualConduit service,
+        overriding the compose default for this run only. Its repository path
+        must end in `/acceptor` on a controller and `/dialer` on a worker.
+
     Returns:
       True if the tunnel is healthy and the core is running the active release.
     """
     role_str = self._role.value if self._role else "<role>"
+
+    dcon_image = (image_ref or "").strip() or None
+    if dcon_image:
+      expected = _DCON_SERVICE_BY_ROLE.get(self._role)
+      repository = dcon_image.split("@", 1)[0]
+      # The `/` is required, not just the base name: `tunnel upgrade` pulls
+      # with `--pull always`, which would resolve a slash-less `dialer:v2`
+      # against Docker Hub.
+      if (
+          expected is None
+          or "/" not in repository
+          or docker_image.GetRepositoryBaseName(dcon_image) != expected
+      ):
+        self._Abort(
+            "--image_ref %r is not a DualConduit %s image: a %s node needs a"
+            " repository path ending in '/%s'.",
+            dcon_image,
+            expected,
+            role_str,
+            expected,
+        )
 
     self._Require(self._MaterializeAndValidateConfig())
 
@@ -1479,6 +1535,6 @@ class NodeStateManager:
       )
 
     self._Require(self._StopCore())
-    self._StartTunnelGroup(pull="always")
+    self._StartTunnelGroup(pull="always", dcon_image=dcon_image)
     self._Require(self._StartCore(_Release.ACTIVE))
     return True

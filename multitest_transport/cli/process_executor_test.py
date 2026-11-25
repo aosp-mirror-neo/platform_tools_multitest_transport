@@ -129,6 +129,25 @@ class DockerComposeExecutorTest(absltest.TestCase):
         timeout=120,
     )
 
+  def testStartAndAwaitHealthy_passesEnvOverrides(self):
+    self.mock_docker_context.Run.return_value = common.CommandResult(
+        0, "Container started and healthy", ""
+    )
+
+    res = self.executor.StartAndAwaitHealthy(
+        timeout_sec=120,
+        pull="always",
+        env={"DCON_DIALER_IMAGE": "repo/dialer:v2"},
+    )
+
+    self.assertTrue(res.success)
+    _, kwargs = self.mock_docker_context.Run.call_args
+    self.assertEqual(kwargs["env"], {"DCON_DIALER_IMAGE": "repo/dialer:v2"})
+    self.assertEqual(
+        self.mock_docker_context.Run.call_args.args[0][-3:],
+        ["--wait", "--pull", "always"],
+    )
+
   def testStartAndAwaitHealthy_failureWithDiagnostics(self):
     ps_output = (
         '[{"Service": "sidecar", "State": "exited", "Health": "unhealthy"},'
