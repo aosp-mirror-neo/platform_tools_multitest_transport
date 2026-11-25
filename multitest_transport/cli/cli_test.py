@@ -114,9 +114,12 @@ class CliTest(parameterized.TestCase):
     self.mock_waiter_patcher.start()
     self.tmp_root = tempfile.mkdtemp()
     self.get_version_patcher = mock.patch.object(
-        cli_util, 'GetVersion', return_value=('dev_version', 'prod')
+        cli_util,
+        'GetVersion',
+        autospec=True,
+        return_value=('dev_version', 'prod'),
     )
-    self.get_version_patcher.start()
+    self.mock_get_version = self.get_version_patcher.start()
 
     self.arg_parser = cli.CreateParser()
     self.arg_parser.add_argument('--cli_path', default='cli_path')
@@ -308,6 +311,120 @@ class CliTest(parameterized.TestCase):
         stdout='prod_R8.202008.001')
 
     cli._CheckDockerImageVersion(docker_helper, container_name)
+
+  @parameterized.named_parameters(
+      (
+          '_internal_latest_same_version_with_newline',
+          'internal_latest_20261118.000',
+          'internal_latest',
+          'internal_latest_20261118.000\n',
+      ),
+      (
+          '_internal_latest_older_image',
+          'internal_latest_20261118.000',
+          'internal_latest',
+          'internal_latest_20261117.000',
+      ),
+      (
+          '_partner_latest_older_image',
+          'partner_latest_20261118.000',
+          'partner_latest',
+          'partner_latest_20261117.000',
+      ),
+      (
+          '_empty_version_suffix_skips_check',
+          'internal_latest_',
+          'internal_latest',
+          'internal_latest_20261118.000',
+      ),
+  )
+  def testCheckDockerImageVersion_underscoreEnvironmentsAllowed(
+      self, cli_version, cli_env, image_version
+  ):
+    docker_helper = mock.create_autospec(
+        command_util.DockerHelper, instance=True
+    )
+    docker_helper.Exec.return_value = common.CommandResult(
+        return_code=0, stdout=image_version, stderr=''
+    )
+    self.mock_get_version.return_value = (cli_version, cli_env)
+
+    cli._CheckDockerImageVersion(docker_helper, 'container_name')
+
+    docker_helper.Stop.assert_not_called()
+
+  @parameterized.named_parameters(
+      (
+          '_internal_latest_vs_internal',
+          'internal_latest_20261118.000',
+          'internal_latest',
+          'internal_20261110.000',
+          'internal_latest != internal',
+      ),
+      (
+          '_partner_latest_vs_partner',
+          'partner_latest_20261118.000',
+          'partner_latest',
+          'partner_20261110.000',
+          'partner_latest != partner',
+      ),
+  )
+  def testCheckDockerImageVersion_underscoreEnvDifferentChannelLogsWarning(
+      self, cli_version, cli_env, image_version, expected_warning
+  ):
+    docker_helper = mock.create_autospec(
+        command_util.DockerHelper, instance=True
+    )
+    docker_helper.Exec.return_value = common.CommandResult(
+        return_code=0, stdout=image_version, stderr=''
+    )
+    self.mock_get_version.return_value = (cli_version, cli_env)
+
+    with self.assertLogs(cli.logger, level='WARNING') as log_ctx:
+      cli._CheckDockerImageVersion(docker_helper, 'container_name')
+
+    docker_helper.Stop.assert_not_called()
+    self.assertIn(expected_warning, '\n'.join(log_ctx.output))
+
+  @parameterized.named_parameters(
+      (
+          '_internal_latest_newer_image',
+          'internal_latest_20261118.000',
+          'internal_latest',
+          'internal_latest_20261119.000',
+          '(20261118.000 < 20261119.000)',
+      ),
+      (
+          '_partner_latest_newer_image',
+          'partner_latest_20261118.000',
+          'partner_latest',
+          'partner_latest_20261119.000',
+          '(20261118.000 < 20261119.000)',
+      ),
+      (
+          '_multiple_underscore_legacy_newer_image',
+          'prod_R9_202009_001',
+          'prod',
+          'prod_R10_202010_001',
+          '(R9_202009_001 < R10_202010_001)',
+      ),
+  )
+  def testCheckDockerImageVersion_underscoreEnvironmentsNewerImage(
+      self, cli_version, cli_env, image_version, expected_version_diff
+  ):
+    docker_helper = mock.create_autospec(
+        command_util.DockerHelper, instance=True
+    )
+    docker_helper.Exec.return_value = common.CommandResult(
+        return_code=0, stdout=image_version, stderr=''
+    )
+    self.mock_get_version.return_value = (cli_version, cli_env)
+
+    with self.assertRaises(cli.ActionableError) as ctx:
+      cli._CheckDockerImageVersion(docker_helper, 'container_name')
+
+    self.assertIn(expected_version_diff, ctx.exception.message)
+    docker_helper.Stop.assert_called_once_with(['container_name'])
 
   @mock.patch.object(command_util.DockerContext, 'Run')
   def testCheckConsoleSuccessfullyStarted_withSuccessIndicator(
@@ -3271,6 +3388,44 @@ class CliTest(parameterized.TestCase):
       ),
       ('no_mtt_version', ['OTHER_VAR=value'], ('dev', None)),
       ('dev_no_underscore', ['MTT_VERSION=dev_version'], ('dev', None)),
+      (
+          'internal_latest_candidate',
+          ['MTT_VERSION=internal_latest_20261118.000'],
+          ('internal_latest', None),
+      ),
+      (
+          'partner_latest_candidate',
+          ['MTT_VERSION=partner_latest_20261118.000'],
+          ('partner_latest', None),
+      ),
+      (
+          'internal_candidate',
+          ['MTT_VERSION=internal_20261110.000'],
+          ('internal', None),
+      ),
+      (
+          'underscore_env_modern_release',
+          ['MTT_VERSION=partner_latest_1.52.003'],
+          ('partner_latest', 52),
+      ),
+      (
+          'underscore_env_legacy_release',
+          ['MTT_VERSION=internal_latest_R52.202601.001'],
+          ('internal_latest', 52),
+      ),
+      (
+          'underscore_env_non_numeric_version',
+          ['MTT_VERSION=internal_latest_227550af-6c61'],
+          ('internal_latest', None),
+      ),
+      (
+          'legacy_underscore_version',
+          ['MTT_VERSION=prod_R52_202601_001'],
+          ('prod', 52),
+      ),
+      ('trailing_underscore', ['MTT_VERSION=internal_latest_'], ('dev', None)),
+      ('leading_underscore', ['MTT_VERSION=_1.52.003'], ('dev', None)),
+      ('whitespace_only_mtt_version', ['MTT_VERSION=   '], ('dev', None)),
   )
   def test_GetImageVersionInfo(self, env_vars, expected):
     docker_helper = mock.MagicMock()

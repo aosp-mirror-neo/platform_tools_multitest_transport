@@ -131,6 +131,13 @@ _CRASH_REPORT_FILE_PATH = '/data/.crash_report_file'
 
 _PROD_ENVIRONMENT = 'prod'
 
+# Matches '<build_env>_<version>' for legacy underscore-delimited versions
+# (e.g. 'prod_R9_202009_001', 'internal_latest_R9_202009_001') where splitting
+# on the last underscore would break the version string.
+_LEGACY_UNDERSCORE_VERSION_RE = re.compile(
+    r'^(?P<env>.+?)_(?P<version>[rR]\d+(?:_\d+)+)$'
+)
+
 
 class ActionableError(Exception):
   """Errors which can be corrected by user actions."""
@@ -426,6 +433,37 @@ def _ParseVersionKey(version_str):
     return (0, version.Version('0'), parts)
 
 
+def _SplitBuildEnvAndVersion(
+    version_str: str | None,
+) -> tuple[str, str] | None:
+  """Splits an MTT_VERSION string into `(build_env, version)`.
+
+  Build environments may contain underscores (for example `internal_latest`
+  and `partner_latest`), so splitting on the first underscore misparses
+  `internal_latest_20261118.000` as `('internal', 'latest_20261118.000')`.
+
+  Args:
+    version_str: Raw `MTT_VERSION` string (for example
+      `'internal_latest_20261118.000'` or `'prod_1.52.003'`).
+
+  Returns:
+    A `(build_env, version)` tuple, or `None` if `version_str` is not a string
+    containing both a non-empty environment and version separated by `'_'`.
+  """
+  if not isinstance(version_str, str):
+    return None
+  stripped = version_str.strip()
+  if '_' not in stripped:
+    return None
+  match = _LEGACY_UNDERSCORE_VERSION_RE.match(stripped)
+  if match:
+    return match.group('env'), match.group('version')
+  build_env, version_part = stripped.rsplit('_', 1)
+  if not build_env or not version_part:
+    return None
+  return build_env, version_part
+
+
 def _CheckDockerImageVersion(docker_helper, container_name):
   """Check a Docker image is compatible with CLI.
 
@@ -438,15 +476,16 @@ def _CheckDockerImageVersion(docker_helper, container_name):
   res = docker_helper.Exec(container_name, ['printenv', 'MTT_VERSION'])
   cli_version, _ = cli_util.GetVersion()
   image_version = res.stdout
-  if (not cli_version or '_' not in cli_version or
-      not image_version or '_' not in image_version):
+  parsed_cli_version = _SplitBuildEnvAndVersion(cli_version)
+  parsed_image_version = _SplitBuildEnvAndVersion(image_version)
+  if not parsed_cli_version or not parsed_image_version:
     logger.debug(
         'CLI or Docker image version is unrecognizable; '
         'skipping version check: cli_version=%s, image_version=%s',
         cli_version, image_version)
     return
-  cli_build_env, cli_version = cli_version.strip().split('_', 1)
-  image_build_env, image_version = image_version.strip().split('_', 1)
+  cli_build_env, cli_version = parsed_cli_version
+  image_build_env, image_version = parsed_image_version
   if cli_build_env != image_build_env:
     logger.warning(
         'CLI and Docker image are from different release channels; '
@@ -1776,7 +1815,8 @@ def _GetImageVersionInfo(
     - Legacy Prod releases: 'prod_R52.202601.001'. Returns ('prod', 52).
     - Modern Prod releases: 'prod_1.52.003'. Returns ('prod', 52).
     - Custom / Release Candidates: 'latest_20260511.000'. Returns ('latest',
-    None).
+      None), 'internal_latest_20261118.000' -> ('internal_latest', None),
+      'partner_latest_20261118.000' -> ('partner_latest', None).
 
   To prevent false-positive substring matches (e.g. parsing a release integer
   from the middle of a date timestamp like '202601' inside R51), we use strict
@@ -1801,7 +1841,7 @@ def _GetImageVersionInfo(
   mtt_version = None
   for env_var in env_vars:
     if env_var.startswith('MTT_VERSION='):
-      mtt_version = env_var.split('=', 1)[1]
+      mtt_version = env_var.split('=', 1)[1].strip()
       break
 
   if not mtt_version:
@@ -1811,12 +1851,12 @@ def _GetImageVersionInfo(
   if mtt_version == 'dev':
     return 'dev', None
 
-  build_env = 'dev'
-  version_str = mtt_version
-  if '_' in mtt_version:
-    # Extract environment prefix (e.g. 'prod') and version suffix
-    # (e.g. '1.52.003')
-    build_env, version_str = mtt_version.strip().split('_', 1)
+  parsed_version = _SplitBuildEnvAndVersion(mtt_version)
+  if parsed_version:
+    build_env, version_str = parsed_version
+  else:
+    build_env = 'dev'
+    version_str = mtt_version
 
   release = None
   # Check modern version format: '1.XX.YYY'
