@@ -72,6 +72,7 @@ ng_module(
     testonly = True,
     srcs = [
         "analytics_service_test.ts",
+        "app_data_test.ts",
         "common_params_service_test.ts",
         "file_service_test.ts",
         "iap_interceptor_test.ts",

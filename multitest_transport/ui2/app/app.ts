@@ -49,7 +49,7 @@ import {HostListPage} from './hosts/host_list_page';
 import {V6IframeContainerComponent} from './shared/v6_iframe_container_component';
 import {NotesModule} from './notes/notes_module';
 import {AnalyticsInterceptor, AnalyticsService} from './services/analytics_service';
-import {APP_DATA, AppData, convertLocalUrl} from './services/app_data';
+import {APP_DATA, AppData, convertLocalUrl, resolveAppData} from './services/app_data';
 import {CommonParamsService} from './services/common_params_service';
 import {FILE_BROWSER_PATH} from './services/file_service';
 import {IapInterceptor} from './services/iap_interceptor';
@@ -441,9 +441,13 @@ export class Mtt implements OnDestroy, OnInit {
     },
     {
       provide: APP_DATA,
-      // Accessing a global window object.
-      // tslint:disable-next-line:no-any
-      useValue: (window as any)['APP_DATA'],
+      // The Lab Console search pages are enabled per page load by the
+      // `force_ready=search` query parameter (see resolveAppData).
+      useFactory: (commonParamsService: CommonParamsService) => resolveAppData(
+          // Accessing a global window object.
+          // tslint:disable-next-line:no-any
+          (window as any)['APP_DATA'], commonParamsService.getCommonParams()),
+      deps: [CommonParamsService],
     },
     {
       provide: MAT_DIALOG_DATA,

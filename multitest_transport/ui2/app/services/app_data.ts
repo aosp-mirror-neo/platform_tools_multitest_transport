@@ -16,6 +16,8 @@
 
 import {InjectionToken} from '@angular/core';
 
+import {ForceReadyFeature, isForceReady} from './common_params_service';
+
 /** Injects the application data loaded from index.html. */
 export const APP_DATA = new InjectionToken<AppData>('APP_DATA');
 
@@ -55,8 +57,30 @@ export declare interface AppData {
   readonly isOmniLabBased?: boolean;
   /** True if Lab Console UI is enabled. */
   readonly enableLabConsoleUI?: boolean;
-  /** True if Lab Console Search Page is enabled. */
+  /**
+   * True if Lab Console Search Page is enabled. Not set by the server: derived
+   * from the `force_ready=search` query parameter (see resolveAppData).
+   */
   readonly enableLabConsoleSearchPage?: boolean;
+}
+
+/**
+ * Resolves the application data of the page.
+ *
+ * @param appData The application data loaded from index.html.
+ * @param commonParams The common query parameters captured at SPA bootstrap
+ *     (see CommonParamsService).
+ * @return The application data, where the Lab Console search pages are enabled
+ *     if the Lab Console UI is enabled and the page was opened with the
+ *     `force_ready=search` query parameter.
+ */
+export function resolveAppData(
+    appData: AppData, commonParams: Readonly<Record<string, string>>): AppData {
+  return {
+    ...appData,
+    enableLabConsoleSearchPage: !!appData.enableLabConsoleUI &&
+        isForceReady(commonParams, ForceReadyFeature.SEARCH),
+  };
 }
 
 /** Converts local url to real url. */

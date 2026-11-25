@@ -23,8 +23,15 @@ import {inject, Injectable} from '@angular/core';
  * (MHFE V6) iframe.
  *
  * The `force_*_ready` keys are LabConsole developer flags: they are forwarded
- * so that features still under development (e.g. host/device action buttons
- * or the bulk device configuration actions) can be previewed inside MTT.
+ * so that features still under development (e.g. host/device action buttons)
+ * can be previewed inside MTT.
+ *
+ * The `force_ready` key takes a comma-separated list of features to force on
+ * (see ForceReadyFeature), e.g. `force_ready=search` for the LabConsole search
+ * pages, which replace the UI2 Devices / Hosts list pages (see
+ * resolveAppData). LabConsole keeps it on its own navigations as well, and
+ * reads its own features from it, e.g. `force_ready=config`. The
+ * `force_all_ready` global switch implies every feature of both.
  */
 export const COMMON_QUERY_PARAMS = [
   'debug',
@@ -32,7 +39,7 @@ export const COMMON_QUERY_PARAMS = [
   'force_host_ready',
   'force_device_ready',
   'force_all_ready',
-  'force_bulk_config_ready',
+  'force_ready',
 ] as const;
 
 /** Key type of the supported common query parameters. */
@@ -42,14 +49,11 @@ const COMMON_QUERY_PARAM_SET: ReadonlySet<string> = new Set<string>(
   COMMON_QUERY_PARAMS,
 );
 
-/**
- * Values activating a common query parameter. Other values (e.g. 'false') are
- * ignored when capturing the common query parameters.
- */
-const ACTIVE_COMMON_QUERY_PARAM_VALUES: ReadonlySet<string> = new Set([
-  'true',
-  '1',
-]);
+/** Features that the `force_ready` common query parameter can force on. */
+export enum ForceReadyFeature {
+  /** The LabConsole search pages, in place of the UI2 Devices / Hosts lists. */
+  SEARCH = 'search',
+}
 
 /**
  * Checks whether a query parameter is a common query parameter.
@@ -62,25 +66,47 @@ export function isCommonQueryParam(key: string): key is CommonQueryParamKey {
 }
 
 /**
+ * Checks whether the `force_ready` common query parameter forces a feature on.
+ *
+ * @param commonParams The common query parameters (see CommonParamsService).
+ * @param feature The feature to check.
+ * @return True if the comma-separated `force_ready` value lists the feature,
+ *     ignoring surrounding whitespace and case, or if the `force_all_ready`
+ *     global switch is on (any value other than '', '0' or 'false', ignoring
+ *     case, as in LabConsole); false otherwise.
+ */
+export function isForceReady(
+  commonParams: Readonly<Record<string, string>>,
+  feature: ForceReadyFeature,
+): boolean {
+  const forceAllReady = commonParams['force_all_ready'];
+  return (
+    (forceAllReady !== undefined &&
+      !['', '0', 'false'].includes(forceAllReady.toLowerCase())) ||
+    (commonParams['force_ready'] ?? '')
+      .split(',')
+      .some((name) => name.trim().toLowerCase() === feature)
+  );
+}
+
+/**
  * Parses the active common query parameters from a URL search string.
  *
  * @param search The URL search string (e.g. '?debug=true&fake_data=1').
  * @return Frozen record of the active common query parameters.
  *
  * Explanation:
- * Only the common query parameters (e.g. debug, fake_data, force_all_ready)
- * whose value is 'true' or '1' are captured, so that e.g. '?debug=false' does
- * not activate the debug mode.
+ * Like LabConsole's CommonParamsService, every common query parameter with a
+ * non-empty value is captured as is (e.g. 'debug=false' or
+ * 'force_ready=search'). Whether a flag is on is decided where it is used,
+ * e.g. by isForceReady.
  */
 export function parseCommonQueryParams(
   search: string,
 ): Readonly<Record<string, string>> {
   const result: Record<string, string> = {};
   for (const [key, value] of new URLSearchParams(search).entries()) {
-    if (
-      isCommonQueryParam(key) &&
-      ACTIVE_COMMON_QUERY_PARAM_VALUES.has(value)
-    ) {
+    if (isCommonQueryParam(key) && value !== '') {
       result[key] = value;
     }
   }
