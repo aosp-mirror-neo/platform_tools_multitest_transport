@@ -1115,7 +1115,7 @@ def _StopMttNode(args, host):
 
     timeout = None
     if host.config.graceful_shutdown or args.wait:
-      logger.info('Wait all tests to finish.')
+      logger.info('Wait for all tests to finish.')
       docker_helper.Kill([args.name], _TF_QUIT)
       # Send shutdown signal to mariadb to gracefully shut down the database.
       docker_helper.Exec(args.name, ['bash', '-c', 'mysqladmin shutdown'])
