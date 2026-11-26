@@ -627,6 +627,7 @@ class NodeStateTest(absltest.TestCase):
             "ResolveCandidate",
             "StopCore",
             "StageComposeFiles",
+            "EnsureNetwork",
             "StartTunnel",
             "RecordAppliedTunnelEnv",
             "StageRelease",
@@ -676,6 +677,7 @@ class NodeStateTest(absltest.TestCase):
         self._JournalSteps(),
         [
             "StageComposeFiles",
+            "EnsureNetwork",
             "StartTunnel",
             "RecordAppliedTunnelEnv",
             "StartCore",
@@ -724,6 +726,7 @@ class NodeStateTest(absltest.TestCase):
         [
             "StopCore",
             "StageComposeFiles",
+            "EnsureNetwork",
             "StartTunnel",
             "RecordAppliedTunnelEnv",
             "StartCore",
@@ -1311,6 +1314,7 @@ class NodeStateTest(absltest.TestCase):
             "MaterializeAndValidateConfig",
             "StopCore",
             "StageComposeFiles",
+            "EnsureNetwork",
             "StartTunnel",
             "RecordAppliedTunnelEnv",
             "StartCore",
@@ -1557,6 +1561,89 @@ class NodeStateTest(absltest.TestCase):
     self.assertIn(
         "esp", self.mock_compose_factory.call_args.kwargs["profiles"]
     )
+
+  def testGetTunnelComposeExecutor_ignoresRetiredGceOverlay(self):
+    # Hosts keep the docker-compose.gce.yml an older CLI extracted; applying
+    # it would put IPv6 settings on the external network, which compose
+    # rejects.
+    os.makedirs(self.compose_mgr.compose_dir, exist_ok=True)
+    with open(
+        os.path.join(self.compose_mgr.compose_dir, "docker-compose.gce.yml"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+      f.write("networks:\n  mtt-net:\n    enable_ipv6: true\n")
+    gce_mgr = NodeStateManager(
+        base_dir=self.test_dir,
+        static_dir=self.static_dir,
+        release_mgr=self.release_mgr,
+        compose_mgr=self.compose_mgr,
+        image_executor=self.mock_image_executor,
+        role=NodeRole.WORKER,
+        host_env=HostEnvironment.GCE,
+    )
+
+    gce_mgr._GetTunnelComposeExecutor(  
+        self.release_mgr.config_compose_env_path
+    )
+
+    self.assertEqual(
+        self.mock_compose_factory.call_args.kwargs["compose_files"],
+        [
+            os.path.join(
+                self.compose_mgr.compose_dir, "docker-compose.distrib.yml"
+            )
+        ],
+    )
+
+  # ==========================================================================
+  # Shared network
+  # ==========================================================================
+
+  def testEnsureNetwork_ipv4OffGce(self):
+    self.state_mgr._EnsureNetwork()  
+
+    self.mock_image_executor.EnsureNetwork.assert_called_once_with(
+        "mtt-net", ipv6_subnet=None
+    )
+
+  def testEnsureNetwork_ipv6OnGce(self):
+    gce_mgr = NodeStateManager(
+        base_dir=self.test_dir,
+        static_dir=self.static_dir,
+        release_mgr=self.release_mgr,
+        compose_mgr=self.compose_mgr,
+        image_executor=self.mock_image_executor,
+        role=NodeRole.CONTROLLER,
+        host_env=HostEnvironment.GCE,
+    )
+
+    gce_mgr._EnsureNetwork()  
+
+    self.mock_image_executor.EnsureNetwork.assert_called_once_with(
+        "mtt-net", ipv6_subnet="fd00:2::/64"
+    )
+
+  @mock.patch.object(process_executor.MttExecutor, "FromConfigFiles")
+  def testUpgradeTunnel_networkFailureStopsBeforeTunnel(
+      self, mock_from_config_files
+  ):
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig()
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+    self.mock_image_executor.EnsureNetwork.side_effect = docker_image.Error(
+        "Failed to create Docker network 'mtt-net': boom"
+    )
+    mock_from_config_files.return_value = self._MockCore()
+
+    success = self.state_mgr.UpgradeTunnel()
+
+    self.assertFalse(success)
+    self.mock_compose_executor.StartAndAwaitHealthy.assert_not_called()
+    self.assertEqual(self._JournalSteps()[-1], "EnsureNetwork")
+    self.assertIn("boom", self._ReadJournal()["steps"][-1]["error_message"])
 
   def testPipeline_unexpectedExceptionStillClosesJournal(self):
     self._PopulateStaticConfig()

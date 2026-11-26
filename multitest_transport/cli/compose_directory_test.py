@@ -27,7 +27,6 @@ from multitest_transport.cli import compose_directory
 # package_data globs fails here instead of in a release.
 _BUNDLED_COMPOSE_FILES = (
     "docker-compose.distrib.yml",
-    "docker-compose.gce.yml",
     os.path.join("infra", "dcon.yml"),
     os.path.join("infra", "esp.yml"),
     os.path.join("infra", "network.yml"),

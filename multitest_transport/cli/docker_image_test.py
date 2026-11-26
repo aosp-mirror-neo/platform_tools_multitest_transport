@@ -402,6 +402,78 @@ class DockerImageTest(absltest.TestCase):
           "asia-docker.pkg.dev/ats-dev-418504/ats-dev/ats:partner_latest",
       )
 
+  def testEnsureNetwork_existingNetworkIsLeftAlone(self):
+    self.mock_context.Run.return_value = common.CommandResult(
+        0, "mtt-net\n", ""
+    )
+
+    created = self.executor.EnsureNetwork("mtt-net", ipv6_subnet="fd00:2::/64")
+
+    self.assertFalse(created)
+    self.mock_context.Run.assert_called_once_with(
+        ["network", "inspect", "--format={{.Name}}", "mtt-net"],
+        raise_on_failure=False,
+        timeout=15,
+    )
+
+  def testEnsureNetwork_createsIpv4BridgeNetwork(self):
+    self.mock_context.Run.side_effect = [
+        common.CommandResult(1, "", "Error: No such network: mtt-net"),
+        common.CommandResult(0, "abc123\n", ""),
+    ]
+
+    created = self.executor.EnsureNetwork("mtt-net")
+
+    self.assertTrue(created)
+    self.mock_context.Run.assert_called_with(
+        ["network", "create", "--driver", "bridge", "mtt-net"],
+        raise_on_failure=False,
+        timeout=30,
+    )
+
+  def testEnsureNetwork_createsIpv6BridgeNetwork(self):
+    self.mock_context.Run.side_effect = [
+        common.CommandResult(1, "", "Error: No such network: mtt-net"),
+        common.CommandResult(0, "abc123\n", ""),
+    ]
+
+    created = self.executor.EnsureNetwork("mtt-net", ipv6_subnet="fd00:2::/64")
+
+    self.assertTrue(created)
+    self.mock_context.Run.assert_called_with(
+        [
+            "network",
+            "create",
+            "--driver",
+            "bridge",
+            "--ipv6",
+            "--subnet",
+            "fd00:2::/64",
+            "mtt-net",
+        ],
+        raise_on_failure=False,
+        timeout=30,
+    )
+
+  def testEnsureNetwork_concurrentCreatorWins(self):
+    self.mock_context.Run.side_effect = [
+        common.CommandResult(1, "", "Error: No such network: mtt-net"),
+        common.CommandResult(1, "", "network with name mtt-net already exists"),
+        common.CommandResult(0, "mtt-net\n", ""),
+    ]
+
+    self.assertFalse(self.executor.EnsureNetwork("mtt-net"))
+
+  def testEnsureNetwork_createFailureRaises(self):
+    self.mock_context.Run.side_effect = [
+        common.CommandResult(1, "", "Error: No such network: mtt-net"),
+        common.CommandResult(1, "", "invalid subnet"),
+        common.CommandResult(1, "", "Error: No such network: mtt-net"),
+    ]
+
+    with self.assertRaisesRegex(Error, "invalid subnet"):
+      self.executor.EnsureNetwork("mtt-net", ipv6_subnet="bogus")
+
 
 if __name__ == "__main__":
   absltest.main()

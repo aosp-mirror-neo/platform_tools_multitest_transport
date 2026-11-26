@@ -61,9 +61,12 @@ CORE_CONTAINER_NAME = "mtt"
 TUNNEL_PROJECT_NAME = "tunnel"
 _CORE_CONTAINER_NAME = CORE_CONTAINER_NAME  # Short alias used throughout.
 
-_ENV_OVERLAY_COMPOSE_FILES: dict[str, str] = {
-    host_env_lib.HostEnvironment.GCE.value: "docker-compose.gce.yml",
-}
+# The Docker network the tunnel sidecars and the core container share. The node
+# CLI creates it, and compose declares it external (compose/infra/network.yml),
+# so compose never recreates or removes it under a running core.
+TUNNEL_NETWORK_NAME = process_executor.MTT_NETWORK_NAME
+# IPv6 subnet of the network on GCE hosts, applied only when it is created.
+_GCE_TUNNEL_NETWORK_IPV6_SUBNET = "fd00:2::/64"
 
 # The DualConduit service each role runs, and the compose variable that
 # overrides its image (see compose/infra/dcon.yml).
@@ -837,6 +840,33 @@ class NodeStateManager:
     return BlockResult(True)
 
   @Block
+  def _EnsureNetwork(self) -> BlockResult:
+    """Creates the shared Docker network if it does not exist yet.
+
+    The node CLI owns the network, not the tunnel compose project: the core
+    container joins it as well, and a compose-owned network would be removed
+    by `down` and recreated by `up` whenever its definition changed, which
+    fails while the core is attached. An existing network is reused as it is,
+    including one an older CLI let compose create, so running hosts need no
+    migration.
+
+    Returns:
+      A failed BlockResult if the network could not be created.
+    """
+    ipv6_subnet = (
+        _GCE_TUNNEL_NETWORK_IPV6_SUBNET
+        if self._host_env == host_env_lib.HostEnvironment.GCE
+        else None
+    )
+    try:
+      self._image_executor.EnsureNetwork(
+          TUNNEL_NETWORK_NAME, ipv6_subnet=ipv6_subnet
+      )
+    except docker_image.Error as e:
+      return BlockResult(False, error_message=str(e))
+    return BlockResult(True)
+
+  @Block
   def _RecordAppliedTunnelEnv(self) -> BlockResult:
     """Copies the env the tunnel was just started with from config/ to tunnel/.
 
@@ -1062,21 +1092,6 @@ class NodeStateManager:
   # Data plane helpers
   # ==========================================================================
 
-  def _GetHostEnvOverlayFile(self) -> Optional[str]:
-    """Returns the path to the host environment overlay compose file if present."""
-    if (
-        not self._host_env
-        or self._host_env == host_env_lib.HostEnvironment.DEFAULT
-    ):
-      return None
-
-    overlay_filename = _ENV_OVERLAY_COMPOSE_FILES.get(self._host_env.value)
-    if not overlay_filename:
-      return None
-
-    overlay_path = self._compose_mgr.GetComposeFilePath(overlay_filename)
-    return overlay_path if os.path.exists(overlay_path) else None
-
   def _ReadComposeEnv(self, env_path: str) -> dict[str, str]:
     """Parses a docker-compose.env file into a dict of stripped values.
 
@@ -1145,13 +1160,12 @@ class NodeStateManager:
     Returns:
       A DockerComposeExecutor for the `tunnel` compose project.
     """
+    # Only the bundled base file. Hosts may still hold the retired
+    # docker-compose.gce.yml, since extraction never deletes files, and it
+    # must not be applied: compose rejects settings on an external network.
     compose_files = [
         self._compose_mgr.GetComposeFilePath("docker-compose.distrib.yml")
     ]
-
-    overlay_file = self._GetHostEnvOverlayFile()
-    if overlay_file:
-      compose_files.append(overlay_file)
 
     env = self._ReadComposeEnv(env_path)
     profiles = [self._role.value] if self._role else []
@@ -1211,6 +1225,7 @@ class NodeStateManager:
       TerminalAbortError: If any block failed.
     """
     self._Require(self._StageComposeFiles())
+    self._Require(self._EnsureNetwork())
     self._Require(self._StartTunnel(pull=pull, dcon_image=dcon_image))
     self._Require(self._RecordAppliedTunnelEnv())
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Docker image pull and digest resolution for MTT Node."""
+"""Docker image, container, and network operations for MTT Node."""
 
 import enum
 import logging
@@ -302,6 +302,51 @@ class DockerImageExecutor:
     if res.return_code != 0 or not res.stdout:
       return []
     return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+  def _NetworkExists(self, name: str) -> bool:
+    """Returns whether a Docker network with this name exists."""
+    res = self._docker_context.Run(
+        ["network", "inspect", "--format={{.Name}}", name],
+        raise_on_failure=False,
+        timeout=15,
+    )
+    return res.return_code == 0
+
+  def EnsureNetwork(
+      self, name: str, ipv6_subnet: Optional[str] = None
+  ) -> bool:
+    """Creates a bridge network unless one with this name already exists.
+
+    An existing network is used as it is, whoever created it and whatever its
+    labels or settings: only its name is checked. The settings apply only when
+    the network is created.
+
+    Args:
+      name: Network name.
+      ipv6_subnet: IPv6 subnet to enable IPv6 with, or None for an IPv4-only
+        network. Docker still assigns an IPv4 subnet from its default pools.
+
+    Returns:
+      True if the network was created, False if it already existed.
+
+    Raises:
+      Error: If the network does not exist and could not be created.
+    """
+    if self._NetworkExists(name):
+      return False
+    args = ["network", "create", "--driver", "bridge"]
+    if ipv6_subnet:
+      args.extend(["--ipv6", "--subnet", ipv6_subnet])
+    args.append(name)
+    logger.info("Creating Docker network %s", name)
+    res = self._docker_context.Run(args, raise_on_failure=False, timeout=30)
+    if res.return_code != 0:
+      # Another process may have created it between the check and the create.
+      if self._NetworkExists(name):
+        return False
+      err_msg = (res.stderr or res.stdout or "").strip()
+      raise Error(f"Failed to create Docker network {name!r}: {err_msg}")
+    return True
 
   def DoesContainerMatchImage(
       self, container_name: str, expected_image: str

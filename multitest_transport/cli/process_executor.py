@@ -30,6 +30,11 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+# The Docker network the tunnel sidecars and the core container share. Defined
+# here because both `MttExecutor` (which joins it) and `node_state` (which
+# creates it) need it, and `node_state` already imports this module.
+MTT_NETWORK_NAME = "mtt-net"
+
 
 @dataclasses.dataclass(frozen=True)
 class DockerComposeConfig:
@@ -533,7 +538,7 @@ class MttExecutor:
       cls,
       lab_config_path: Optional[str] = None,
       pinned_mtt_flags_path: Optional[str] = None,
-      network: str = "mtt-net",
+      network: str = MTT_NETWORK_NAME,
       mtt_bin: str = "mtt",
       command_context: Optional[command_util.CommandContext] = None,
   ) -> "MttExecutor":

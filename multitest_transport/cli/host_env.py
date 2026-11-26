@@ -14,8 +14,8 @@
 
 """Host environment classification for MTT Node.
 
-The environment a node runs in decides which Docker Compose overlay applies and
-whether GCP-only sidecars are available. Detection is a local probe with no
+The environment a node runs in decides how the shared Docker network is created
+and whether GCP-only sidecars are available. Detection is a local probe with no
 dependencies, so every caller that needs the environment resolves it here
 rather than reimplementing the test.
 """
@@ -27,7 +27,7 @@ _GCE_PRODUCT_NAME = "Google Compute Engine"
 
 
 class HostEnvironment(enum.Enum):
-  """Host environment types for Docker Compose overlays."""
+  """Host environment types."""
 
   DEFAULT = "default"
   GCE = "gce"
@@ -36,7 +36,8 @@ class HostEnvironment(enum.Enum):
   def IsGcp(self) -> bool:
     """Returns whether the environment can reach GCP-hosted infrastructure.
 
-    Distinct from the specific environment, which selects a compose overlay.
+    Distinct from the specific environment, which selects the network
+    settings.
     Callers gating a GCP-only service (such as the Cloud Endpoints proxy)
     should ask this rather than comparing against a single member, so that
     additional GCP environments stay a one-line change here.

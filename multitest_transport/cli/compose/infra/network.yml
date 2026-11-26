@@ -1,4 +1,7 @@
+# mtt-net is created by the node CLI (`NodeStateManager._EnsureNetwork`), not
+# by compose: the core container joins it too, so compose must never recreate
+# or remove it underneath a running core.
 networks:
   mtt-net:
     name: mtt-net
-    driver: bridge
+    external: true
