@@ -1515,8 +1515,17 @@ class NodeStateManager:
   def UpgradeTunnel(self, image_ref: Optional[str] = None) -> bool:
     """Applies a new tunnel environment or new sidecar images.
 
-    The core is stopped first and started afterwards: it is not left holding
-    sockets to sidecars that are being replaced.
+    On a worker the core is stopped first and started afterwards: the lab
+    server opens its reverse DualConduit session through the dialer once, at
+    startup, so a new dialer leaves it unreachable until the core restarts.
+
+    On a controller a running core is left alone. Replacing the acceptor only
+    interrupts connections: the workers' dialers keep their sessions and
+    reconnect them, the acceptor re-registers them under the same xDS names,
+    and the core's xDS client resubscribes. The shared network is external, so
+    `compose up` never recreates it under the attached core. A core that is
+    not running is started, so the command ends in the same condition on both
+    roles.
 
     Args:
       image_ref: One-time image reference for this role's DualConduit service,
@@ -1555,6 +1564,16 @@ class NodeStateManager:
       self._Abort(
           "No active release found. Run 'mtt node %s start' first.", role_str
       )
+
+    if self._role == NodeRole.CONTROLLER:
+      core_up = self.ObserveCore().is_up
+      self._StartTunnelGroup(pull="always", dcon_image=dcon_image)
+      if not core_up:
+        # A stopped core is started; an unhealthy one is replaced. `_StopCore`
+        # does nothing when no container is running.
+        self._Require(self._StopCore())
+        self._Require(self._StartCore(_Release.ACTIVE))
+      return True
 
     self._Require(self._StopCore())
     self._StartTunnelGroup(pull="always", dcon_image=dcon_image)

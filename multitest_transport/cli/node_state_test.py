@@ -1472,7 +1472,61 @@ class NodeStateTest(absltest.TestCase):
     self.mock_compose_executor.StartAndAwaitHealthy.assert_called_once_with(
         pull="always", env={"DCON_ACCEPTOR_IMAGE": image_ref}
     )
-    self.mock_stop_executor.Stop.assert_called_once()
+    # A running controller core is left alone.
+    self.mock_stop_executor.Stop.assert_not_called()
+    mock_from_config_files.assert_not_called()
+    self.assertEqual(
+        self._JournalSteps(),
+        [
+            "MaterializeAndValidateConfig",
+            "StageComposeFiles",
+            "EnsureNetwork",
+            "StartTunnel",
+            "RecordAppliedTunnelEnv",
+        ],
+    )
+
+  @mock.patch.object(process_executor.MttExecutor, "FromConfigFiles")
+  def testUpgradeTunnel_controllerStartsStoppedCore(
+      self, mock_from_config_files
+  ):
+    controller_mgr = self._ControllerStateManager()
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig(image_name="mtt-controller", is_controller=True)
+    mock_from_config_files.return_value = self._MockCore()
+
+    success = controller_mgr.UpgradeTunnel()
+
+    self.assertTrue(success)
+    self.assertEqual(
+        self._JournalSteps(),
+        [
+            "MaterializeAndValidateConfig",
+            "StageComposeFiles",
+            "EnsureNetwork",
+            "StartTunnel",
+            "RecordAppliedTunnelEnv",
+            "StopCore",
+            "StartCore",
+        ],
+    )
+
+  def testUpgradeTunnel_controllerTunnelFailureLeavesCoreRunning(self):
+    controller_mgr = self._ControllerStateManager()
+    self._CreateActiveRelease()
+    self._PopulateStaticConfig(image_name="mtt-controller", is_controller=True)
+    self.mock_image_executor.GetContainerStatus.return_value = (
+        docker_image.ContainerStatus.HEALTHY
+    )
+    self.mock_compose_executor.StartAndAwaitHealthy.return_value = (
+        ExecutionResult(common.CommandResult(1, "", "Sidecar crash"))
+    )
+
+    success = controller_mgr.UpgradeTunnel()
+
+    self.assertFalse(success)
+    self.mock_stop_executor.Stop.assert_not_called()
+    self.assertEqual(self._JournalSteps()[-1], "StartTunnel")
 
   def testUpgradeTunnel_controllerRejectsDialerImage(self):
     controller_mgr = self._ControllerStateManager()
