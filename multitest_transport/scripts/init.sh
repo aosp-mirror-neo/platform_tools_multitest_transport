@@ -623,6 +623,15 @@ function start_test_runner {
   fi
 }
 
+# Waits up to 5 minutes for the Datastore Emulator to exit.
+function wait_for_datastore_emulator_exit {
+  local elapsed=0
+  while pgrep -f CloudDatastore.jar > /dev/null && (( elapsed < 300 )); do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+}
+
 # Waits for background services to complete and propagates the exit code.
 function wait_for_services {
   # In ATS 1.0, serve.sh acts as the primary controller process.
@@ -657,8 +666,12 @@ function wait_for_services {
     exit 1
   fi
 
-  # Wait for services to finish graceful shutdown on SIGTERM/SIGINT.
-  trap 'wait "${target_pids[@]}" 2>/dev/null; exit $?' SIGTERM SIGINT
+  # Wait for services to finish graceful shutdown on SIGTERM/SIGINT, then for
+  # the Datastore Emulator, which persists datastore.db in place on SIGTERM. If
+  # init.sh exited first, tini would exit and the emulator would be killed
+  # mid-write, truncating the file. The wait status is captured explicitly
+  # because errexit also applies in the trap.
+  trap 'wait "${target_pids[@]}" 2>/dev/null && rc=0 || rc=$?; wait_for_datastore_emulator_exit; exit "${rc}"' SIGTERM SIGINT
 
   # Exit on first failure in standalone mode, or wait for the single service.
   if [[ ${#target_pids[@]} -gt 1 ]]; then

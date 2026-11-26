@@ -67,5 +67,5 @@ flowchart TD
     CheckPostRun -->|None| WaitForServices
     RunPost --> WaitForServices
 
-    WaitForServices["wait_for_services<br/>(Wait for controller, worker,<br/>or both to finish)"] --> End(["Exit Container"])
+    WaitForServices["wait_for_services<br/>(Wait for controller, worker,<br/>or both to finish; on SIGTERM/SIGINT<br/>also wait for the Datastore Emulator)"] --> End(["Exit Container"])
 %% LINT.ThenChange(init.sh)

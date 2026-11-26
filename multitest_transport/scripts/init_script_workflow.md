@@ -103,7 +103,8 @@ corresponding boolean flags (`IS_STANDALONE_MODE`, `IS_CONTROLLER_ONLY_MODE`,
     allowing post-startup configuration (such as starting the Wrangler agent).
 -   **Service Lifecycle Management (`wait_for_services`):** Waits for the
     controller process, worker process, or both (in Standalone mode) to finish,
-    and propagates the exit code.
+    and propagates the exit code. On `SIGTERM`/`SIGINT`, it also waits for the
+    Datastore Emulator to finish persisting `datastore.db` before exiting.
 
 ---
 
