@@ -92,14 +92,18 @@ class NodeLockTest(absltest.TestCase):
     node_lock.Release(fd)
     self.assertTrue(os.path.isdir(base_dir))
 
-  def testAcquire_outlastsAStatusProbe(self):
-    # A `status` probe holds the lock for microseconds. Two contended attempts
-    # stand in for it; the clock does not advance, so the grace period cannot
-    # run out however slowly the test machine schedules us.
-    attempts = self._PatchContendedFlock(busy_attempts=2)
-    mock_sleep = self.enterContext(mock.patch.object(node_lock.time, "sleep"))
-    self.enterContext(
-        mock.patch.object(node_lock.time, "monotonic", return_value=0.0)
+  def testAcquire_waitsForAStatus(self):
+    # A `status` holds the lock shared while it reads, and is done by the
+    # time the command looks again.
+    status_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDONLY, 0o660)
+    self.addCleanup(os.close, status_fd)
+    fcntl.flock(status_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    mock_sleep = self.enterContext(
+        mock.patch.object(
+            node_lock.time,
+            "sleep",
+            side_effect=lambda _: fcntl.flock(status_fd, fcntl.LOCK_UN),
+        )
     )
 
     fd = node_lock.Acquire(self.base_dir)
@@ -107,20 +111,19 @@ class NodeLockTest(absltest.TestCase):
     self.assertIsNotNone(fd)
     assert fd is not None
     node_lock.Release(fd)
-    self.assertLen(attempts, 3)
-    self.assertEqual(
-        mock_sleep.call_args_list,
-        [mock.call(node_lock._LOCK_RETRY_SEC)] * 2,  
-    )
+    mock_sleep.assert_called_once_with(node_lock._LOCK_RETRY_SEC)  
 
-  def testAcquire_givesUpAfterGracePeriod(self):
-    # A real command holds the lock for seconds: every attempt is contended,
-    # and the third clock reading is past the deadline.
+  def testAcquire_givesUpOnAStatusAfterGracePeriod(self):
+    # A `status` holds the lock for longer than the grace period: every
+    # exclusive attempt is contended, no command holds the lock, and the
+    # fourth clock reading is past the deadline.
     attempts = self._PatchContendedFlock(busy_attempts=100)
     mock_sleep = self.enterContext(mock.patch.object(node_lock.time, "sleep"))
     self.enterContext(
         mock.patch.object(
-            node_lock.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 1.0]
+            node_lock.time,
+            "monotonic",
+            side_effect=[0.0, 0.0, 0.0, node_lock._LOCK_GRACE_SEC],  
         )
     )
 
@@ -128,10 +131,44 @@ class NodeLockTest(absltest.TestCase):
     self.assertLen(attempts, 3)
     self.assertEqual(mock_sleep.call_count, 2)
 
-  def testAcquire_heldByAnotherOpenFileIsReported(self):
+  def testAcquire_reportsACommandWithoutWaiting(self):
     self._HoldLock()
+    mock_sleep = self.enterContext(mock.patch.object(node_lock.time, "sleep"))
 
     self.assertIsNone(node_lock.Acquire(self.base_dir))
+    mock_sleep.assert_not_called()
+
+  def testShared_createsNothingWhenThereIsNoLockFile(self):
+    with node_lock.Shared(self.base_dir) as free:
+      self.assertTrue(free)
+
+    self.assertFalse(os.path.exists(self.lock_file))
+
+  def testShared_reportsACommand(self):
+    self._HoldLock()
+
+    with node_lock.Shared(self.base_dir) as free:
+      self.assertFalse(free)
+
+  def testShared_keepsCommandsOutUntilItEnds(self):
+    command_fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR, 0o660)
+    self.addCleanup(os.close, command_fd)
+
+    with node_lock.Shared(self.base_dir) as free:
+      self.assertTrue(free)
+      with self.assertRaises(BlockingIOError):
+        fcntl.flock(command_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    fcntl.flock(command_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+  def testShared_twoObserversHoldItAtOnce(self):
+    with open(self.lock_file, "w", encoding="utf-8"):
+      pass
+
+    with node_lock.Shared(self.base_dir) as first:
+      with node_lock.Shared(self.base_dir) as second:
+        self.assertTrue(first)
+        self.assertTrue(second)
 
   def testIsHeld_createsNothingWhenThereIsNoLockFile(self):
     self.assertFalse(node_lock.IsHeld(self.base_dir))

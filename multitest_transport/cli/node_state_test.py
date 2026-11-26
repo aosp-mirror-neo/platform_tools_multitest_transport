@@ -304,6 +304,30 @@ class NodeStateTest(absltest.TestCase):
     self.assertFalse(os.path.exists(self.state_mgr.journal_file))
     self.assertFalse(os.path.exists(self.state_mgr.lock_file))
 
+  def testGetStatus_keepsCommandsOutWhileItReads(self):
+    command_fd = os.open(
+        self.state_mgr.lock_file, os.O_CREAT | os.O_RDWR, 0o660
+    )
+    self.addCleanup(os.close, command_fd)
+    kept_out = []
+
+    def TryToStartACommand(_):
+      try:
+        fcntl.flock(command_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        kept_out.append(False)
+      except BlockingIOError:
+        kept_out.append(True)
+      return docker_image.ContainerStatus.NOT_RUNNING
+
+    self.mock_image_executor.GetContainerStatus.side_effect = TryToStartACommand
+
+    status = self.state_mgr.GetStatus()
+
+    self.assertEqual(kept_out, [True])
+    self.assertFalse(status.busy)
+    # The lock is free again once the status is read.
+    fcntl.flock(command_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
   def testGetStatus_runningMatchingContainerReportsActiveRevision(self):
     self._PopulateRuntimeConfig()
     versions_path = self.release_mgr.config_versions_path

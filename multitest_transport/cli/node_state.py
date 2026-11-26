@@ -238,11 +238,10 @@ def Pipeline(func: Callable[..., bool]) -> Callable[..., bool]:
   """Marks a command, acquires the host lock, and opens/closes its journal.
 
   Acquires a non-blocking exclusive lock on `<baseDir>/.lock` before opening
-  the journal, retrying for a short grace period so that a concurrent `status`
-  probe, which holds the lock for microseconds, cannot make a command fail as
-  busy. When another command still holds the lock after the grace period,
-  prints the holding command and returns False without touching
-  `journal.json`.
+  the journal. Another command that holds the lock is reported at once: the
+  pipeline prints the holding command and returns False without touching
+  `journal.json`. A concurrent `status`, which holds the lock shared while it
+  reads, is waited for, so that it cannot make a command fail as busy.
 
   Args:
     func: The pipeline method, which must return a bool.
@@ -564,8 +563,16 @@ class NodeStateManager:
   def GetStatus(self) -> NodeStatus:
     """Observes both groups, lock state, active release, and last upgrade.
 
+    Everything is read with `.lock` held shared, so that no command runs
+    between two reads: `busy` is false only if no command held the lock, and
+    then the rest is one state of the node. Read one after another without
+    the lock, a core that an upgrade was still starting and a lock that the
+    upgrade had released a moment later would report a node that is down and
+    idle, which it never was. When a command does hold the lock, `busy` is
+    true and the rest may be changing as it is read.
+
     Writes nothing to disk. It does read: ObserveTunnel stats
-    <base_dir>/tunnel/docker-compose.env, node_lock.IsHeld probes
+    <base_dir>/tunnel/docker-compose.env, node_lock.Shared opens
     <base_dir>/.lock
     only if it already exists, and _ReadJournalDict reads journal.json if
     present. os.path.exists reports EACCES as False, so a caller who cannot
@@ -576,26 +583,26 @@ class NodeStateManager:
     Returns:
       Structured NodeStatus observation.
     """
-    tunnel = self.ObserveTunnel()
-    core = self.ObserveCore()
-    busy = node_lock.IsHeld(self._base_dir)
-    journal = self._ReadJournalDict()
+    with node_lock.Shared(self._base_dir) as free:
+      busy = not free
+      tunnel = self.ObserveTunnel()
+      core = self.ObserveCore()
+      journal = self._ReadJournalDict()
+      active_revision: dict[str, str] = {}
+      active_ref = self._release_mgr.GetActiveImageRef()
+      if (
+          core.is_up
+          and active_ref
+          and self._image_executor.DoesContainerMatchImage(
+              _CORE_CONTAINER_NAME, active_ref
+          )
+      ):
+        active_revision = self._release_mgr.GetActiveRevision()
 
     state = "RUNNING" if core.is_up else "DOWN"
     busy_command: Optional[str] = None
     if busy:
       busy_command = str((journal or {}).get("command") or "unknown")
-
-    active_revision: dict[str, str] = {}
-    active_ref = self._release_mgr.GetActiveImageRef()
-    if (
-        core.is_up
-        and active_ref
-        and self._image_executor.DoesContainerMatchImage(
-            _CORE_CONTAINER_NAME, active_ref
-        )
-    ):
-      active_revision = self._release_mgr.GetActiveRevision()
 
     last_upgrade: Optional[LastUpgrade] = None
     if (
