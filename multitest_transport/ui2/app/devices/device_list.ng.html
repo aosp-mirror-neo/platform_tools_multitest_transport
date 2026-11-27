@@ -307,7 +307,7 @@
     <!-- Build Id -->
     <ng-container matColumnDef="build_id">
       <mat-header-cell *matHeaderCellDef fxFlex="180px"> Build Id </mat-header-cell>
-      <mat-cell *matCellDef="let device" fxFlex="180px"> {{ device.build_id }} </mat-cell>
+      <mat-cell *matCellDef="let device" [matTooltip]="device.build_id" fxFlex="180px"> {{ device.build_id }} </mat-cell>
     </ng-container>
 
     <!-- SIM State -->
